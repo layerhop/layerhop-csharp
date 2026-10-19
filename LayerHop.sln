@@ -1,0 +1,36 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{BD0A651D-B5CB-412E-89A8-A81D8AED1B1A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LayerHop", "src\LayerHop\LayerHop.csproj", "{178B41C7-717D-4B75-B327-461098B612B1}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{C4F3CB6F-43DD-4F2B-947C-CF4E11B7916B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LayerHop.Tests", "tests\LayerHop.Tests\LayerHop.Tests.csproj", "{3D2F7C99-BCD4-4A9A-85C2-014319F5C064}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{178B41C7-717D-4B75-B327-461098B612B1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{178B41C7-717D-4B75-B327-461098B612B1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{178B41C7-717D-4B75-B327-461098B612B1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{178B41C7-717D-4B75-B327-461098B612B1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3D2F7C99-BCD4-4A9A-85C2-014319F5C064}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3D2F7C99-BCD4-4A9A-85C2-014319F5C064}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3D2F7C99-BCD4-4A9A-85C2-014319F5C064}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3D2F7C99-BCD4-4A9A-85C2-014319F5C064}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{178B41C7-717D-4B75-B327-461098B612B1} = {BD0A651D-B5CB-412E-89A8-A81D8AED1B1A}
+		{3D2F7C99-BCD4-4A9A-85C2-014319F5C064} = {C4F3CB6F-43DD-4F2B-947C-CF4E11B7916B}
+	EndGlobalSection
+EndGlobal

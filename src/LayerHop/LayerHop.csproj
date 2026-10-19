@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- netstandard2.1: runs on .NET 6+ and Unity 2021.3+ (Mono and IL2CPP). -->
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <!-- C# 9 is the newest language version Unity 2021.3+ compiles. -->
+    <LangVersion>9.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <RootNamespace>LayerHop</RootNamespace>
+    <AssemblyName>LayerHop</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Not every model property carries an XML doc comment. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+    <PackageId>LayerHop</PackageId>
+    <Version>0.6.0</Version>
+    <Authors>LayerHop</Authors>
+    <Company>LayerHop</Company>
+    <Description>C# client for the LayerHop cross-chain swap and crypto payments API (.NET and Unity). Fetches quotes and builds unsigned transactions; never holds keys or signs.</Description>
+    <PackageTags>layerhop;crypto;swap;bridge;cross-chain;solana;ethereum;evm;unity;payments</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://docs.layerhop.com/sdks/csharp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/layerhop/layerhop-csharp</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <!-- Unity package files: not part of the NuGet build. -->
+    <None Remove="**\*.meta" />
+    <None Remove="package.json;LayerHop.asmdef;link.xml" />
+  </ItemGroup>
+
+</Project>

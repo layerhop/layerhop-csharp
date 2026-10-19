@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- Build output goes to ./artifacts, never into src/LayerHop: that folder is also the Unity
+         package, and Unity compiles every .cs file under it (including obj/ leftovers). -->
+    <UseArtifactsOutput>true</UseArtifactsOutput>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,8 @@
+<!--
+  IL2CPP managed code stripping: keep every LayerHop type and member. The models are created by
+  Newtonsoft.Json through their public constructors and property setters, which the linker cannot
+  see statically.
+-->
+<linker>
+  <assembly fullname="LayerHop" preserve="all" />
+</linker>
