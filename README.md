@@ -14,8 +14,12 @@ Amounts are integer strings in base units (`"1000000"` is 1 USDC), never floats.
 
 ## Install
 
+For Unity, see [Unity](#unity) below (git URL, no NuGet needed). For .NET, `dotnet add package LayerHop`
+works once the package is on NuGet; until then reference the project from a clone of the `v0.6.0` tag:
+
 ```bash
-dotnet add package LayerHop --version 0.6.0
+git clone --branch v0.6.0 https://github.com/layerhop/layerhop-csharp
+dotnet add reference layerhop-csharp/src/LayerHop/LayerHop.csproj
 ```
 
 For Unity, see [Unity](#unity) below.
