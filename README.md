@@ -1,8 +1,8 @@
 # LayerHop C# SDK
 
 C# client for the [LayerHop](https://layerhop.com) API, for **.NET 6+** and **Unity 2021.3+**:
-best-price cross-chain and same-chain swaps across EVM chains and Solana, plus crypto checkout,
-invoices, subscriptions, deposit addresses and Solana limit orders.
+best-price cross-chain and same-chain swaps across EVM chains, Solana and Tron, plus crypto checkout,
+invoices, subscriptions, deposit addresses, splits, payouts and Solana limit and recurring orders.
 
 The SDK is **non-custodial**. It never holds private keys and never signs anything. It fetches quotes
 and builds *unsigned* transactions, and your own wallet integration signs and broadcasts them.
@@ -55,7 +55,7 @@ else
     // var sig = await lh.SubmitAsync(quote.Best.QuoteId, signedBase64);
 }
 
-// Poll until the order is filled, refunded or failed.
+// Poll until the order is final: filled, refunded, failed or dropped (never reached the network; re-quote).
 var final = await lh.WatchOrderAsync(quote.Best.Provider, "0xSourceTxHash",
     onChange: s => Console.WriteLine(s.State));
 ```
@@ -74,15 +74,97 @@ Every non-2xx response throws `LayerHopApiException` with a stable `Code` (`NO_R
 
 ```csharp
 try { await lh.BuildTxAsync(quoteId); }
-catch (LayerHopApiException e) when (e.Code == "QUOTE_EXPIRED") { /* re-quote */ }
+catch (LayerHopApiException e) when (e.Code == ErrorCodes.QuoteExpired) { /* re-quote */ }
 ```
+
+`e.Details` is the raw `error.details` JSON (or null). Typed helpers read it: `e.Suggestions` (on
+`NO_ROUTE`, and `UNSUPPORTED_CHAIN` into Blast: up to 4 alternatives that quoted, kind `dst_token`,
+`src_token` or `via_hub` with a `Hub` and two `Steps`; malformed entries are dropped),
+`e.MinAmount` / `MinAmountUsd` / `MinAmountApprox` (on `AMOUNT_TOO_SMALL`) and `e.ProviderErrors`.
+
+```csharp
+catch (LayerHopApiException e) when (e.Code == ErrorCodes.NoRoute)
+{
+    foreach (var s in e.Suggestions) Console.WriteLine($"{s.Kind}: {s.Message}");   // quote again before signing
+}
+```
+
+### Tron
+
+`BuildTxAsync` returns `Vm == "tvm"` for Tron routes (where the API runs with Tron enabled).
+`tx.AsTron()` gives the `From` address, the `Call` and the prebuilt `Unsigned` transaction
+(`TxID`, `RawDataHex`, `RawData` as raw JSON). The SDK never signs: sign `Unsigned` unchanged with a
+Tron wallet (TronWeb / TronLink; `Unsigned.ToJson()` is the object they take), send `Approval.Unsigned`
+first when `Approval` is set, broadcast before `raw_data.expiration`, then
+`ReportSubmittedAsync(quoteId, tron.Unsigned.TxID)` (bare 64-hex, no `0x`). `SimulateAsync` reports
+`EnergyUsed`. Tron's chain id is `ChainIds.Tron` (728126428).
+
+### Gasless swaps
+
+For a wallet with no native gas: quote with `Gasless = true` (same-chain ERC-20 input), then sign
+EIP-712 typed data instead of sending a transaction. `BuildTxAsync` throws on a gasless quote.
+
+```csharp
+var q = await lh.QuoteAsync(new QuoteParams { /* ... */ Gasless = true });   // q.Best.Gasless.GasFee
+var sign = await lh.BuildGaslessAsync(q.Best.QuoteId);
+// Sign sign.Approval?.Eip712 (when set) and sign.Trade.Eip712 unchanged with eth_signTypedData_v4
+// (Eip712.ToJson() is the JSON), on sign.ChainId. The SDK never signs.
+var st = await lh.SubmitGaslessAsync(q.Best.QuoteId, tradeSig, approvalSig);
+st = await lh.GetGaslessStatusAsync(q.Best.QuoteId);                         // poll until filled / failed
+```
+
+### Destination calls
+
+`QuoteCallsAsync` quotes an exact output (`DstAmount`) that a provider's executor spends on your
+`Calls` (or an `Action` preset such as `"aave-v3-supply"`) on the destination chain. Each quote
+carries `SrcAmount` (what the sender pays) and `Calls` with the pre-quote simulation.
+
+```csharp
+var q = await lh.QuoteCallsAsync(new CallsQuoteParams
+{
+    SrcChain = "base", SrcToken = "USDC", DstChain = "arbitrum", DstToken = "USDC", DstAmount = "5000000",
+    Sender = "0xYou", Recipient = "0xYou", Action = "aave-v3-supply",
+});
+```
+
+### Tokens: search, lookup, risk
+
+`SearchTokensAsync(chain, q, limit, cursor)` pages and searches a chain's tokens (`NextCursor`).
+`LookupTokenAsync(address, chain?)` finds one token by address; the chain is optional. Tokens read
+on-chain have `Verified == false`: warn before trading them. `GetTokenRiskAsync(chain, address)`
+returns a `TokenRisk` (`Level` ok / caution / danger / unknown, plus `Reasons`); `unknown` should
+never block a swap. `GetBalancesAsync(address, chains, tokens, fresh)` lists a wallet's balances.
+
+### Splits, tip jars and payouts
+
+Public endpoints, no key needed; nothing is signed by the SDK.
+
+```csharp
+var split = await lh.CreateSplitAsync(new CreateSplitParams { Recipient = "alice.eth", Chain = "base", Token = "USDC", Total = "120000000", Participants = 4 });
+// Keep split.EditToken secret. Payers quote with SplitId = split.Id, SplitShare = index.
+await lh.UpdateSplitAsync(split.Id, split.EditToken, new UpdateSplitParams { Status = SplitStatuses.Closed });
+var jar = await lh.GetTipJarAsync("0xAddress");                              // Tippers, Tips, Messages
+var plan = await lh.PlanPayoutsAsync(new PlanPayoutsParams { SrcChain = "base", SrcToken = "USDC", Sender = "0xYou", Csv = csvText });
+var batch = await lh.BuildPayoutTransfersAsync(new BuildPayoutTransfersParams { Chain = "base", Token = "USDC", Sender = "0xYou", Transfers = transfers });
+```
+
+`UpdateSplitParams.Note = ""` clears the note. Routed payout rows are quoted with `QuoteAsync` and
+`Purpose = QuotePurposes.Payout`.
+
+### Recurring orders (Solana)
+
+`CreateRecurringOrderAsync` builds a Jupiter Recurring order (budget split into equal buys on an
+interval); the wallet signs `Tx` (sign only) and you send it with
+`SubmitRecurringOrderAsync(requestId, signedBase64)`. `ListRecurringOrdersAsync(wallet, status, page)`
+and `CancelRecurringOrderAsync(id, wallet)` (returns a cancel tx to sign and submit the same way).
 
 ### Everything else
 
 | Area | Methods |
 |---|---|
-| Assets | `GetChainsAsync`, `GetTokensAsync`, `GetPricesAsync` |
-| Swaps | `QuoteAsync`, `BuildTxAsync`, `SubmitAsync`, `ReportSubmittedAsync`, `SimulateAsync`, `GetOrderStatusAsync`, `ListOrdersAsync`, `WatchOrder` / `WatchOrderAsync` |
+| Assets | `GetChainsAsync`, `GetTokensAsync`, `SearchTokensAsync`, `LookupTokenAsync`, `GetTokenRiskAsync`, `GetPricesAsync`, `GetBalancesAsync` |
+| Swaps | `QuoteAsync`, `QuoteCallsAsync`, `BuildTxAsync`, `SubmitAsync`, `ReportSubmittedAsync`, `SimulateAsync`, `GetOrderStatusAsync`, `ListOrdersAsync`, `WatchOrder` / `WatchOrderAsync` |
+| Gasless | `BuildGaslessAsync`, `SubmitGaslessAsync`, `GetGaslessStatusAsync` |
 | Checkout | `CreateCheckoutSessionAsync`, `GetCheckoutSessionAsync`, `ListCheckoutSessionsAsync`, `ExpireCheckoutSessionAsync`, `QuoteCheckoutSessionAsync` |
 | Products | `CreateCheckoutProductAsync`, `GetCheckoutProductAsync`, `ListCheckoutProductsAsync`, `UpdateCheckoutProductAsync`, `StartProductCheckoutAsync` |
 | Refunds | `CreateRefundAsync`, `ListRefundsAsync` |
@@ -90,6 +172,8 @@ catch (LayerHopApiException e) when (e.Code == "QUOTE_EXPIRED") { /* re-quote */
 | Deposit addresses | `CreateDepositAddressAsync`, `GetDepositAddressAsync`, `ListDepositAddressesAsync`, `RefreshDepositAddressAsync`, `DisableDepositAddressAsync`, `SimulateDepositAsync` |
 | Subscriptions | `CreateSubscriptionAsync`, `GetSubscriptionAsync`, `ListSubscriptionsAsync`, `UpdateSubscriptionAsync`, `CancelSubscriptionAsync`, `PauseSubscriptionAsync`, `ResumeSubscriptionAsync`, `ListSubscriptionInvoicesAsync` |
 | Limit orders (Solana, beta) | `CreateLimitOrderAsync`, `SubmitLimitOrderAsync`, `GetLimitOrderAsync`, `ListLimitOrdersAsync`, `CancelLimitOrderAsync`, `SimulateLimitOrderAsync` |
+| Recurring orders (Solana) | `CreateRecurringOrderAsync`, `SubmitRecurringOrderAsync`, `ListRecurringOrdersAsync`, `CancelRecurringOrderAsync` |
+| Splits, tips, payouts | `CreateSplitAsync`, `GetSplitAsync`, `UpdateSplitAsync`, `GetTipJarAsync`, `PlanPayoutsAsync`, `BuildPayoutTransfersAsync` |
 | Misc | `HealthAsync`, `GetServiceStatusAsync`, `TriggerWebhookEventAsync` |
 
 `Update*Params` send only the properties you set. Setting a nullable text field to `""` clears it
@@ -148,7 +232,7 @@ and several `v1` values are accepted, so secrets can be rotated.
 In **Window > Package Manager > + > Add package from git URL...** enter:
 
 ```
-https://github.com/layerhop/layerhop-csharp.git?path=src/LayerHop#v0.6.0
+https://github.com/layerhop/layerhop-csharp.git?path=src/LayerHop#v0.7.0
 ```
 
 or add it to `Packages/manifest.json`:
@@ -156,7 +240,7 @@ or add it to `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.layerhop.sdk": "https://github.com/layerhop/layerhop-csharp.git?path=src/LayerHop#v0.6.0"
+    "com.layerhop.sdk": "https://github.com/layerhop/layerhop-csharp.git?path=src/LayerHop#v0.7.0"
   }
 }
 ```
