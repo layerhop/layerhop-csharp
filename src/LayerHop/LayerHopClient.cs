@@ -258,7 +258,7 @@ namespace LayerHop
         }
 
         /// <summary>
-        /// Polls <see cref="GetOrderStatusAsync"/> until the order is final (filled / refunded / failed), yielding
+        /// Polls <see cref="GetOrderStatusAsync"/> until the order is final (filled / refunded / failed / dropped), yielding
         /// each state change. Throws <see cref="LayerHopWatchTimeoutException"/> after <paramref name="timeout"/>
         /// (default 30 min). Polls every <paramref name="interval"/> (default 3 s).
         /// </summary>

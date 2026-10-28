@@ -161,6 +161,7 @@ namespace LayerHop
         public const string OrderFilled = "order.filled";
         public const string OrderRefunded = "order.refunded";
         public const string OrderFailed = "order.failed";
+        public const string OrderDropped = "order.dropped";
         public const string CheckoutSessionProcessing = "checkout.session.processing";
         public const string CheckoutSessionCompleted = "checkout.session.completed";
         public const string CheckoutSessionPaymentFailed = "checkout.session.payment_failed";

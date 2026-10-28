@@ -4,7 +4,7 @@ using Newtonsoft.Json;
 
 namespace LayerHop
 {
-    /// <summary>Order states reported by GET /v1/orders/{provider}/{id}. Filled, Refunded and Failed are final.</summary>
+    /// <summary>Order states reported by GET /v1/orders/{provider}/{id}. Filled, Refunded, Failed and Dropped are final.</summary>
     public static class OrderStates
     {
         /// <summary>Not final yet.</summary>
@@ -15,11 +15,13 @@ namespace LayerHop
         public const string Refunded = "refunded";
         /// <summary>Failed.</summary>
         public const string Failed = "failed";
+        /// <summary>The source transaction never reached the network; no funds moved (final; re-quote).</summary>
+        public const string Dropped = "dropped";
         /// <summary>The provider does not know the order (yet).</summary>
         public const string Unknown = "unknown";
 
         /// <summary>Whether the state will not change any more.</summary>
-        public static bool IsFinal(string? state) => state == Filled || state == Refunded || state == Failed;
+        public static bool IsFinal(string? state) => state == Filled || state == Refunded || state == Failed || state == Dropped;
     }
 
     /// <summary>Well-known chain ids.</summary>
