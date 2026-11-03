@@ -28,7 +28,7 @@ namespace LayerHop.Tests
             Assert.Equal("GET", h.Last.Method);
             Assert.Equal("/v1/health", h.Last.Path);
             Assert.Equal("k1", h.Last.Headers["x-api-key"]);
-            Assert.Equal("layerhop-csharp/0.7.0", h.Last.Headers["user-agent"]);
+            Assert.Equal("layerhop-csharp/0.8.0", h.Last.Headers["user-agent"]);
             Assert.Equal("application/json", h.Last.Headers["accept"]);
         }
 

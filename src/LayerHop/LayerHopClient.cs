@@ -39,7 +39,7 @@ namespace LayerHop
         /// <summary>The hosted API origin.</summary>
         public const string DefaultBaseUrl = "https://api.layerhop.com";
         /// <summary>SDK version, sent in the User-Agent header.</summary>
-        public const string Version = "0.7.0";
+        public const string Version = "0.8.0";
 
         private static readonly HttpMethod Patch = new HttpMethod("PATCH");
 
