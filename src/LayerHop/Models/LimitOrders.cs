@@ -114,6 +114,123 @@ namespace LayerHop
         [JsonProperty("tx")] public BuiltTx? Tx { get; set; }
     }
 
+    /// <summary>Recurring order statuses, and the list filters of <see cref="LayerHopClient.ListRecurringOrdersAsync"/>.</summary>
+    public static class RecurringOrderStatuses
+    {
+        public const string Active = "active";
+        public const string Completed = "completed";
+        public const string Cancelled = "cancelled";
+        /// <summary>List filter: completed and cancelled orders.</summary>
+        public const string History = "history";
+    }
+
+    /// <summary>Body of POST /v1/recurring-orders (Solana, Jupiter Recurring).</summary>
+    public class CreateRecurringOrderParams
+    {
+        /// <summary>Only "solana" (the default) for now.</summary>
+        [JsonProperty("chain")] public string? Chain { get; set; }
+        /// <summary>The Solana wallet that funds, signs and owns the order.</summary>
+        [JsonProperty("wallet")] public string Wallet { get; set; } = "";
+        /// <summary>Token spent (mint or symbol); USDC when null.</summary>
+        [JsonProperty("srcToken")] public string? SrcToken { get; set; }
+        /// <summary>Token bought (mint or symbol).</summary>
+        [JsonProperty("dstToken")] public string DstToken { get; set; } = "";
+        /// <summary>The whole budget in base units of SrcToken, deposited when the order opens.</summary>
+        [JsonProperty("amount")] public string Amount { get; set; } = "";
+        /// <summary>Number of buys (2-1000); each spends Amount / Orders (at least $50 each).</summary>
+        [JsonProperty("orders")] public int Orders { get; set; }
+        /// <summary>Seconds between buys (86400 = daily).</summary>
+        [JsonProperty("intervalSeconds")] public long IntervalSeconds { get; set; }
+    }
+
+    public class RecurringOrderFees
+    {
+        [JsonProperty("ourFeeBps")] public int OurFeeBps { get; set; }
+        [JsonProperty("integratorFeeBps")] public int IntegratorFeeBps { get; set; }
+    }
+
+    /// <summary>A built recurring order: sign Tx with Wallet (sign only), then SubmitRecurringOrderAsync with RequestId.</summary>
+    public class RecurringOrderBuild
+    {
+        [JsonProperty("object")] public string Object { get; set; } = "";
+        [JsonProperty("livemode")] public bool Livemode { get; set; }
+        [JsonProperty("provider")] public string Provider { get; set; } = "";
+        [JsonProperty("chainId")] public long ChainId { get; set; }
+        [JsonProperty("wallet")] public string Wallet { get; set; } = "";
+        [JsonProperty("srcToken")] public string SrcToken { get; set; } = "";
+        [JsonProperty("dstToken")] public string DstToken { get; set; } = "";
+        [JsonProperty("amount")] public string Amount { get; set; } = "";
+        [JsonProperty("amountPerOrder")] public string AmountPerOrder { get; set; } = "";
+        [JsonProperty("orders")] public int Orders { get; set; }
+        [JsonProperty("intervalSeconds")] public long IntervalSeconds { get; set; }
+        /// <summary>Always 0: Jupiter Recurring lets integrators charge no fee.</summary>
+        [JsonProperty("fees")] public RecurringOrderFees Fees { get; set; } = new RecurringOrderFees();
+        /// <summary>Send it back with the signed transaction.</summary>
+        [JsonProperty("requestId")] public string RequestId { get; set; } = "";
+        /// <summary>Unsigned Solana tx (SubmitViaApi): sign only, never broadcast it yourself.</summary>
+        [JsonProperty("tx")] public BuiltTx Tx { get; set; } = new BuiltTx();
+    }
+
+    /// <summary>One buy of a recurring order.</summary>
+    public class RecurringOrderFill
+    {
+        [JsonProperty("txHash")] public string TxHash { get; set; } = "";
+        [JsonProperty("amount")] public string Amount { get; set; } = "";
+        [JsonProperty("dstAmount")] public string DstAmount { get; set; } = "";
+        [JsonProperty("feeAmount")] public string FeeAmount { get; set; } = "";
+        [JsonProperty("feeToken")] public string? FeeToken { get; set; }
+        [JsonProperty("filledAt")] public string? FilledAt { get; set; }
+    }
+
+    /// <summary>A recurring order, read live from Jupiter. Id is the order account.</summary>
+    public class RecurringOrder
+    {
+        [JsonProperty("id")] public string Id { get; set; } = "";
+        [JsonProperty("object")] public string Object { get; set; } = "";
+        [JsonProperty("provider")] public string Provider { get; set; } = "";
+        [JsonProperty("chainId")] public long ChainId { get; set; }
+        /// <summary>See <see cref="RecurringOrderStatuses"/>.</summary>
+        [JsonProperty("status")] public string Status { get; set; } = "";
+        [JsonProperty("wallet")] public string Wallet { get; set; } = "";
+        [JsonProperty("srcToken")] public string SrcToken { get; set; } = "";
+        [JsonProperty("dstToken")] public string DstToken { get; set; } = "";
+        [JsonProperty("amount")] public string Amount { get; set; } = "";
+        [JsonProperty("amountPerOrder")] public string AmountPerOrder { get; set; } = "";
+        [JsonProperty("orders")] public int Orders { get; set; }
+        [JsonProperty("ordersFilled")] public int OrdersFilled { get; set; }
+        [JsonProperty("intervalSeconds")] public long IntervalSeconds { get; set; }
+        [JsonProperty("spentAmount")] public string SpentAmount { get; set; } = "0";
+        [JsonProperty("withdrawnAmount")] public string WithdrawnAmount { get; set; } = "0";
+        [JsonProperty("receivedAmount")] public string ReceivedAmount { get; set; } = "0";
+        [JsonProperty("openTxHash")] public string? OpenTxHash { get; set; }
+        [JsonProperty("closeTxHash")] public string? CloseTxHash { get; set; }
+        [JsonProperty("createdAt")] public string? CreatedAt { get; set; }
+        /// <summary>Up to 50 most recent buys.</summary>
+        [JsonProperty("fills")] public List<RecurringOrderFill> Fills { get; set; } = new List<RecurringOrderFill>();
+    }
+
+    public class ListRecurringOrdersResponse
+    {
+        [JsonProperty("recurringOrders")] public List<RecurringOrder> RecurringOrders { get; set; } = new List<RecurringOrder>();
+        [JsonProperty("page")] public int Page { get; set; }
+        [JsonProperty("totalPages")] public int TotalPages { get; set; }
+    }
+
+    public class SubmitRecurringOrderResponse
+    {
+        /// <summary>The landed transaction's signature.</summary>
+        [JsonProperty("txHash")] public string TxHash { get; set; } = "";
+        /// <summary>The order account (create); null for a cancel.</summary>
+        [JsonProperty("order")] public string? Order { get; set; }
+    }
+
+    /// <summary>The unsigned cancel tx: sign with the wallet, then SubmitRecurringOrderAsync with RequestId.</summary>
+    public class CancelRecurringOrderResponse
+    {
+        [JsonProperty("requestId")] public string RequestId { get; set; } = "";
+        [JsonProperty("tx")] public BuiltTx Tx { get; set; } = new BuiltTx();
+    }
+
     /// <summary>One day of uptime history.</summary>
     public class StatusDay
     {
@@ -161,6 +278,7 @@ namespace LayerHop
         public const string OrderFilled = "order.filled";
         public const string OrderRefunded = "order.refunded";
         public const string OrderFailed = "order.failed";
+        public const string OrderDropped = "order.dropped";
         public const string CheckoutSessionProcessing = "checkout.session.processing";
         public const string CheckoutSessionCompleted = "checkout.session.completed";
         public const string CheckoutSessionPaymentFailed = "checkout.session.payment_failed";

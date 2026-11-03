@@ -39,7 +39,7 @@ namespace LayerHop
         /// <summary>The hosted API origin.</summary>
         public const string DefaultBaseUrl = "https://api.layerhop.com";
         /// <summary>SDK version, sent in the User-Agent header.</summary>
-        public const string Version = "0.6.0";
+        public const string Version = "0.7.0";
 
         private static readonly HttpMethod Patch = new HttpMethod("PATCH");
 
@@ -113,9 +113,12 @@ namespace LayerHop
             public override string ToString() => _sb.ToString();
         }
 
-        private async Task<T> SendAsync<T>(HttpMethod method, string path, Query? query, object? body, CancellationToken ct)
+        private Task<T> SendAsync<T>(HttpMethod method, string path, Query? query, object? body, CancellationToken ct) =>
+            SendAsync<T>(method, path, query, body, null, ct);
+
+        private async Task<T> SendAsync<T>(HttpMethod method, string path, Query? query, object? body, Dictionary<string, string>? headers, CancellationToken ct)
         {
-            var raw = await SendRawAsync(method, path, query, body, ct).ConfigureAwait(false);
+            var raw = await SendRawAsync(method, path, query, body, headers, ct).ConfigureAwait(false);
             try
             {
                 return Json.Deserialize<T>(raw);
@@ -126,13 +129,15 @@ namespace LayerHop
             }
         }
 
-        private async Task<string> SendRawAsync(HttpMethod method, string path, Query? query, object? body, CancellationToken ct)
+        private async Task<string> SendRawAsync(HttpMethod method, string path, Query? query, object? body, Dictionary<string, string>? headers, CancellationToken ct)
         {
             using (var req = new HttpRequestMessage(method, _baseUrl + "/v1" + path + (query?.ToString() ?? "")))
             {
                 req.Headers.TryAddWithoutValidation("accept", "application/json");
                 req.Headers.TryAddWithoutValidation("user-agent", _userAgent);
                 if (_apiKey != null) req.Headers.TryAddWithoutValidation("x-api-key", _apiKey);
+                if (headers != null)
+                    foreach (var kv in headers) req.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
                 if (body != null)
                 {
                     var json = body is JToken tok ? tok.ToString(Formatting.None) : Json.Serialize(body);
@@ -155,6 +160,7 @@ namespace LayerHop
                 foreach (var id in ids) { requestId = id; break; }
             var code = "INTERNAL";
             var message = string.IsNullOrEmpty(res.ReasonPhrase) ? "HTTP " + status : res.ReasonPhrase!;
+            JObject? details = null;
             try
             {
                 if (JToken.Parse(text) is JObject root && root["error"] is JObject err)
@@ -162,13 +168,14 @@ namespace LayerHop
                     if (err["code"] is JValue c && c.Type == JTokenType.String && ((string?)c)?.Length > 0) code = (string)c!;
                     if (err["message"] is JValue m && m.Type == JTokenType.String && ((string?)m)?.Length > 0) message = (string)m!;
                     if (err["requestId"] is JValue r && r.Type == JTokenType.String && ((string?)r)?.Length > 0) requestId = (string)r!;
+                    if (err["details"] is JObject d) details = d;
                 }
             }
             catch (JsonException)
             {
                 // Not JSON: keep the defaults.
             }
-            return new LayerHopApiException(code, message, status, requestId);
+            return new LayerHopApiException(code, message, status, requestId, details);
         }
 
         private static readonly JObject EmptyBody = new JObject();
@@ -184,7 +191,13 @@ namespace LayerHop
         private sealed class ChainsBody { [JsonProperty("chains")] public List<Chain> Chains { get; set; } = new List<Chain>(); }
         private sealed class TokensBody { [JsonProperty("tokens")] public List<Token> Tokens { get; set; } = new List<Token>(); }
         private sealed class PricesBody { [JsonProperty("prices")] public Dictionary<string, double> Prices { get; set; } = new Dictionary<string, double>(); }
-        private sealed class TxBody { [JsonProperty("tx")] public BuiltTx Tx { get; set; } = new BuiltTx(); }
+        private sealed class BuildOrderBody
+        {
+            [JsonProperty("tx")] public BuiltTx? Tx { get; set; }
+            [JsonProperty("gasless")] public GaslessSignRequest? Gasless { get; set; }
+        }
+        private sealed class TokenBody { [JsonProperty("token")] public Token Token { get; set; } = new Token(); }
+        private sealed class RiskBody { [JsonProperty("risk")] public TokenRisk Risk { get; set; } = new TokenRisk(); }
         private sealed class TxHashBody { [JsonProperty("txHash")] public string TxHash { get; set; } = ""; }
         private sealed class InvoicesBody { [JsonProperty("invoices")] public List<Invoice> Invoices { get; set; } = new List<Invoice>(); }
 
@@ -197,11 +210,61 @@ namespace LayerHop
             (await SendAsync<TokensBody>(HttpMethod.Get, "/tokens", new Query().Add("chain", chain), null, ct).ConfigureAwait(false)).Tokens;
 
         /// <summary>
-        /// USD prices for up to 100 <c>chainId:address</c> ids (the chain may be a slug) (GET /v1/prices).
-        /// Keyed by the ids exactly as requested; ids without a known price are left out.
+        /// Searches or pages the tokens of one chain (GET /v1/tokens). <paramref name="q"/> matches a symbol,
+        /// name or exact address; an unlisted address is read on-chain (Verified false). Pass NextCursor as
+        /// <paramref name="cursor"/> for the next page.
         /// </summary>
-        public async Task<Dictionary<string, double>> GetPricesAsync(IEnumerable<string> ids, CancellationToken ct = default) =>
-            (await SendAsync<PricesBody>(HttpMethod.Get, "/prices", new Query().Add("ids", string.Join(",", ids)), null, ct).ConfigureAwait(false)).Prices;
+        public Task<TokensPage> SearchTokensAsync(string chain, string? q = null, int? limit = null, string? cursor = null, CancellationToken ct = default) =>
+            SendAsync<TokensPage>(HttpMethod.Get, "/tokens", new Query().Add("chain", chain).Add("q", q).Add("limit", limit).Add("cursor", cursor), null, ct);
+
+        /// <summary>
+        /// One token by address or mint (GET /v1/tokens/lookup). Without <paramref name="chain"/> the API finds
+        /// the chain from the address. Tokens read on-chain have Verified false: warn before trading them.
+        /// </summary>
+        public async Task<Token> LookupTokenAsync(string address, string? chain = null, CancellationToken ct = default) =>
+            (await SendAsync<TokenBody>(HttpMethod.Get, "/tokens/lookup", new Query().Add("address", address).Add("chain", chain), null, ct).ConfigureAwait(false)).Token;
+
+        /// <summary>
+        /// A token's safety report (GET /v1/tokens/{chain}/{address}/risk): honeypots, taxes, owner powers,
+        /// fake majors. Level "unknown" means no source answered and should never block a swap.
+        /// </summary>
+        public async Task<TokenRisk> GetTokenRiskAsync(string chain, string address, CancellationToken ct = default) =>
+            (await SendAsync<RiskBody>(HttpMethod.Get, "/tokens/" + Seg(chain) + "/" + Seg(address) + "/risk", null, null, ct).ConfigureAwait(false)).Risk;
+
+        /// <summary>
+        /// USD prices for up to 100 <c>chainId:address</c> ids (the chain may be a slug) (GET /v1/prices).
+        /// Keyed by the ids exactly as requested; ids without a known price are left out. No ids: an empty
+        /// result without a request.
+        /// </summary>
+        public async Task<Dictionary<string, double>> GetPricesAsync(IEnumerable<string> ids, CancellationToken ct = default)
+        {
+            var joined = string.Join(",", ids);
+            if (joined.Length == 0) return new Dictionary<string, double>();
+            return (await SendAsync<PricesBody>(HttpMethod.Get, "/prices", new Query().Add("ids", joined), null, ct).ConfigureAwait(false)).Prices;
+        }
+
+        /// <summary>
+        /// A wallet's balances with prices (GET /v1/balances). <paramref name="chains"/>: ids or slugs (default:
+        /// the popular chains of the address's VM). <paramref name="tokens"/>: <c>chainId:address</c> entries that
+        /// are always returned, even at zero. <paramref name="fresh"/> reloads balances cached over 4 seconds.
+        /// </summary>
+        public Task<BalancesResponse> GetBalancesAsync(string address, IEnumerable<string>? chains = null, IEnumerable<string>? tokens = null,
+            bool fresh = false, CancellationToken ct = default)
+        {
+            var q = new Query().Add("address", address);
+            if (chains != null)
+            {
+                var c = string.Join(",", chains);
+                if (c.Length > 0) q.Add("chains", c);
+            }
+            if (tokens != null)
+            {
+                var t = string.Join(",", tokens);
+                if (t.Length > 0) q.Add("tokens", t);
+            }
+            if (fresh) q.Add("fresh", "1");
+            return SendAsync<BalancesResponse>(HttpMethod.Get, "/balances", q, null, ct);
+        }
 
         /// <summary>Asks every provider for a price (GET /v1/quote). Best is the highest output for the user.</summary>
         public Task<QuoteResponse> QuoteAsync(QuoteParams p, CancellationToken ct = default)
@@ -222,12 +285,92 @@ namespace LayerHop
                 q.Add("gasOnArrivalUsd", p.GasOnArrivalUsd.Value.ToString("R", CultureInfo.InvariantCulture));
             else if (p.GasOnArrival)
                 q.Add("gasOnArrival", "true");
+            if (p.Gasless) q.Add("gasless", "true");
+            if (!string.IsNullOrEmpty(p.Referrer)) q.Add("referrer", p.Referrer);
+            if (!string.IsNullOrEmpty(p.CopyOf)) q.Add("copyOf", p.CopyOf);
+            if (!string.IsNullOrEmpty(p.Purpose)) q.Add("purpose", p.Purpose);
+            q.Add("splitId", p.SplitId).Add("splitShare", p.SplitShare);
+            if (!string.IsNullOrEmpty(p.Note)) q.Add("note", p.Note);
             return SendAsync<QuoteResponse>(HttpMethod.Get, "/quote", q, null, ct);
         }
 
-        /// <summary>The unsigned transaction for a quote (POST /v1/orders). EVM txs may carry an Approval to send first.</summary>
-        public async Task<BuiltTx> BuildTxAsync(string quoteId, CancellationToken ct = default) =>
-            (await SendAsync<TxBody>(HttpMethod.Post, "/orders", null, new JObject { ["quoteId"] = quoteId }, ct).ConfigureAwait(false)).Tx;
+        /// <summary>
+        /// Quotes an exact output for destination calls (POST /v1/quote): DstAmount of DstToken is delivered to
+        /// the provider's executor, which runs Calls (or the Action preset) in order. Only providers that run
+        /// calls answer; each quote carries SrcAmount (what Sender pays) and Calls (with the simulation).
+        /// </summary>
+        public Task<QuoteResponse> QuoteCallsAsync(CallsQuoteParams p, CancellationToken ct = default)
+        {
+            var body = new JObject
+            {
+                ["srcChain"] = p.SrcChain,
+                ["srcToken"] = p.SrcToken,
+                ["dstChain"] = p.DstChain,
+                ["dstToken"] = p.DstToken,
+                ["dstAmount"] = p.DstAmount,
+                ["sender"] = p.Sender,
+                ["recipient"] = p.Recipient,
+                ["slippageBps"] = p.SlippageBps ?? 50,
+                ["channel"] = _channel,
+            };
+            if (_integrator != null) body["integrator"] = _integrator;
+            if (_integratorFeeBps.HasValue) body["integratorFeeBps"] = _integratorFeeBps.Value;
+            if (p.Calls != null)
+            {
+                var calls = new JArray();
+                foreach (var c in p.Calls)
+                {
+                    var o = new JObject { ["to"] = c.To, ["data"] = c.Data };
+                    if (!string.IsNullOrEmpty(c.Value)) o["value"] = c.Value;
+                    calls.Add(o);
+                }
+                body["calls"] = calls;
+            }
+            if (!string.IsNullOrEmpty(p.Action)) body["action"] = new JObject { ["type"] = p.Action };
+            if (!string.IsNullOrEmpty(p.Referrer)) body["referrer"] = p.Referrer;
+            if (!string.IsNullOrEmpty(p.CopyOf)) body["copyOf"] = p.CopyOf;
+            return SendAsync<QuoteResponse>(HttpMethod.Post, "/quote", null, body, ct);
+        }
+
+        /// <summary>
+        /// The unsigned transaction for a quote (POST /v1/orders). EVM and Tron txs may carry an Approval to send
+        /// first. A gasless quote throws <see cref="InvalidOperationException"/>: use <see cref="BuildGaslessAsync"/>.
+        /// </summary>
+        public async Task<BuiltTx> BuildTxAsync(string quoteId, CancellationToken ct = default)
+        {
+            var r = await SendAsync<BuildOrderBody>(HttpMethod.Post, "/orders", null, new JObject { ["quoteId"] = quoteId }, ct).ConfigureAwait(false);
+            if (r.Tx != null) return r.Tx;
+            if (r.Gasless != null) throw new InvalidOperationException("layerhop: this quote is gasless; use BuildGaslessAsync");
+            throw new JsonSerializationException("layerhop: decode POST /orders: the response has no tx");
+        }
+
+        /// <summary>
+        /// Gasless quotes: the EIP-712 typed data the wallet signs (an optional Approval, then Trade) (POST /v1/orders,
+        /// which records the order). The SDK never signs. Throws <see cref="InvalidOperationException"/> for a quote
+        /// that is not gasless (use <see cref="BuildTxAsync"/>).
+        /// </summary>
+        public async Task<GaslessSignRequest> BuildGaslessAsync(string quoteId, CancellationToken ct = default)
+        {
+            var r = await SendAsync<BuildOrderBody>(HttpMethod.Post, "/orders", null, new JObject { ["quoteId"] = quoteId }, ct).ConfigureAwait(false);
+            if (r.Gasless == null) throw new InvalidOperationException("layerhop: this quote is not gasless; use BuildTxAsync");
+            return r.Gasless;
+        }
+
+        /// <summary>
+        /// Gasless: sends the wallet's eth_signTypedData_v4 signatures (POST /v1/orders/gasless); the provider's
+        /// relayer sends the transaction. <paramref name="approvalSignature"/> is required exactly when the sign
+        /// request had an Approval. Errors: GASLESS_PENDING, GASLESS_FAILED, CONFLICT, QUOTE_EXPIRED.
+        /// </summary>
+        public Task<GaslessOrderStatus> SubmitGaslessAsync(string quoteId, string tradeSignature, string? approvalSignature = null, CancellationToken ct = default)
+        {
+            var sigs = new JObject { ["trade"] = tradeSignature };
+            if (!string.IsNullOrEmpty(approvalSignature)) sigs["approval"] = approvalSignature;
+            return SendAsync<GaslessOrderStatus>(HttpMethod.Post, "/orders/gasless", null, new JObject { ["quoteId"] = quoteId, ["signatures"] = sigs }, ct);
+        }
+
+        /// <summary>Gasless: the order's state (GET /v1/orders/gasless/{quoteId}); poll until filled or failed.</summary>
+        public Task<GaslessOrderStatus> GetGaslessStatusAsync(string quoteId, CancellationToken ct = default) =>
+            SendAsync<GaslessOrderStatus>(HttpMethod.Get, "/orders/gasless/" + Seg(quoteId), null, null, ct);
 
         /// <summary>
         /// Sends a wallet-signed Solana transaction (base64) for SubmitViaApi quotes (POST /v1/orders/submit).
@@ -258,7 +401,7 @@ namespace LayerHop
         }
 
         /// <summary>
-        /// Polls <see cref="GetOrderStatusAsync"/> until the order is final (filled / refunded / failed), yielding
+        /// Polls <see cref="GetOrderStatusAsync"/> until the order is final (filled / refunded / failed / dropped), yielding
         /// each state change. Throws <see cref="LayerHopWatchTimeoutException"/> after <paramref name="timeout"/>
         /// (default 30 min). Polls every <paramref name="interval"/> (default 3 s).
         /// </summary>
@@ -524,6 +667,68 @@ namespace LayerHop
         /// <summary>Fills, half-fills or expires an open test-mode order (POST /v1/limit-orders/{id}/simulate). See <see cref="LimitOrderSimulations"/>.</summary>
         public Task<LimitOrder> SimulateLimitOrderAsync(string id, string outcome, CancellationToken ct = default) =>
             SendAsync<LimitOrder>(HttpMethod.Post, "/limit-orders/" + Seg(id) + "/simulate", null, new JObject { ["outcome"] = outcome }, ct);
+
+        // -----------------------------------------------------------------------------------------
+        // Recurring orders (Solana, Jupiter Recurring)
+        // -----------------------------------------------------------------------------------------
+
+        /// <summary>
+        /// Builds a Solana recurring order (POST /v1/recurring-orders): Amount of SrcToken (default USDC) spent in
+        /// Orders equal buys of DstToken, one every IntervalSeconds. Have the wallet sign Tx (sign only), then
+        /// <see cref="SubmitRecurringOrderAsync"/> with RequestId. No LayerHop fee. The SDK never signs.
+        /// </summary>
+        public Task<RecurringOrderBuild> CreateRecurringOrderAsync(CreateRecurringOrderParams p, CancellationToken ct = default) =>
+            SendAsync<RecurringOrderBuild>(HttpMethod.Post, "/recurring-orders", null, p, ct);
+
+        /// <summary>Sends the wallet-signed create or cancel tx (base64) with its request id (POST /v1/recurring-orders/submit).</summary>
+        public Task<SubmitRecurringOrderResponse> SubmitRecurringOrderAsync(string requestId, string signedTransaction, CancellationToken ct = default) =>
+            SendAsync<SubmitRecurringOrderResponse>(HttpMethod.Post, "/recurring-orders/submit", null,
+                new JObject { ["requestId"] = requestId, ["signedTransaction"] = signedTransaction }, ct);
+
+        /// <summary>A wallet's recurring orders, 10 per page (GET /v1/recurring-orders). Status: "active" (default) or "history".</summary>
+        public Task<ListRecurringOrdersResponse> ListRecurringOrdersAsync(string wallet, string? status = null, int? page = null, CancellationToken ct = default) =>
+            SendAsync<ListRecurringOrdersResponse>(HttpMethod.Get, "/recurring-orders", new Query().Add("wallet", wallet).Add("status", status).Add("page", page), null, ct);
+
+        /// <summary>Builds the cancel tx of an active order (POST /v1/recurring-orders/{id}/cancel); sign it, then SubmitRecurringOrderAsync.</summary>
+        public Task<CancelRecurringOrderResponse> CancelRecurringOrderAsync(string id, string wallet, CancellationToken ct = default) =>
+            SendAsync<CancelRecurringOrderResponse>(HttpMethod.Post, "/recurring-orders/" + Seg(id) + "/cancel", null, new JObject { ["wallet"] = wallet }, ct);
+
+        // -----------------------------------------------------------------------------------------
+        // Splits, tip jars, payouts (public, no key needed; nothing is signed here)
+        // -----------------------------------------------------------------------------------------
+
+        /// <summary>
+        /// Creates a split (POST /v1/splits). The result carries EditToken, the secret that edits it, shown only
+        /// once. Payers pay a share with QuoteAsync (SplitId + SplitShare).
+        /// </summary>
+        public Task<SplitCreated> CreateSplitAsync(CreateSplitParams p, CancellationToken ct = default) =>
+            SendAsync<SplitCreated>(HttpMethod.Post, "/splits", null, p, ct);
+
+        /// <summary>A split and who has paid (GET /v1/splits/{id}).</summary>
+        public Task<Split> GetSplitAsync(string id, CancellationToken ct = default) =>
+            SendAsync<Split>(HttpMethod.Get, "/splits/" + Seg(id), null, null, ct);
+
+        /// <summary>Edits or closes a split (PATCH /v1/splits/{id}), sending <paramref name="editToken"/> as x-edit-token.</summary>
+        public Task<Split> UpdateSplitAsync(string id, string editToken, UpdateSplitParams p, CancellationToken ct = default) =>
+            SendAsync<Split>(Patch, "/splits/" + Seg(id), null, p.ToJson(), new Dictionary<string, string> { ["x-edit-token"] = editToken }, ct);
+
+        /// <summary>Tip jar counters and the latest messages for an address (GET /v1/tip-jars/{address}).</summary>
+        public Task<TipJar> GetTipJarAsync(string address, CancellationToken ct = default) =>
+            SendAsync<TipJar>(HttpMethod.Get, "/tip-jars/" + Seg(address), null, null, ct);
+
+        /// <summary>
+        /// Checks up to 100 payout rows (Rows or Csv) and groups the valid ones into transfer batches and routes
+        /// (POST /v1/payouts/plan). A bad row never fails the request.
+        /// </summary>
+        public Task<PayoutPlan> PlanPayoutsAsync(PlanPayoutsParams p, CancellationToken ct = default) =>
+            SendAsync<PayoutPlan>(HttpMethod.Post, "/payouts/plan", null, p, ct);
+
+        /// <summary>
+        /// Builds one batch of plain transfers for the payer's wallet to sign (POST /v1/payouts/transfers): EVM Calls
+        /// or a Solana SerializedTx. No LayerHop fee. Check each call against its row before signing.
+        /// </summary>
+        public Task<PayoutTransfers> BuildPayoutTransfersAsync(BuildPayoutTransfersParams p, CancellationToken ct = default) =>
+            SendAsync<PayoutTransfers>(HttpMethod.Post, "/payouts/transfers", null, p, ct);
 
         // -----------------------------------------------------------------------------------------
         // Misc

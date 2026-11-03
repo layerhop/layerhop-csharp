@@ -1,6 +1,6 @@
 {
   "name": "com.layerhop.sdk",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "displayName": "LayerHop",
   "description": "C# client for the LayerHop cross-chain swap and crypto payments API. Fetches quotes and builds unsigned transactions for your game's wallet to sign; never holds keys.",
   "unity": "2021.3",

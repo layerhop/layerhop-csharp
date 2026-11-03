@@ -123,11 +123,12 @@ namespace LayerHop
         [JsonProperty("slippageBps")] public int? SlippageBps { get; set; }
     }
 
-    /// <summary>A quote for paying a session. DstAmountMin is always at least the amount due.</summary>
+    /// <summary>
+    /// A quote for paying a session. DstAmountMin is always at least the amount due. <see cref="Quote.SrcAmount"/>
+    /// (always set here) is what the payer sends, in base units of the chosen token.
+    /// </summary>
     public class CheckoutQuote : Quote
     {
-        /// <summary>What the payer sends, base units of the chosen token.</summary>
-        [JsonProperty("srcAmount")] public string SrcAmount { get; set; } = "";
     }
 
     public class CheckoutQuoteResponse
@@ -321,5 +322,283 @@ namespace LayerHop
     public class ListRefundsResponse
     {
         [JsonProperty("refunds")] public List<Refund> Refunds { get; set; } = new List<Refund>();
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Splits, tip jars, payouts (public endpoints; LayerHop never signs anything)
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>Split statuses.</summary>
+    public static class SplitStatuses
+    {
+        public const string Open = "open";
+        public const string Closed = "closed";
+    }
+
+    /// <summary>One person's share when creating a split: a label, and an amount for custom shares (all or none).</summary>
+    public class SplitShareInput
+    {
+        /// <summary>Up to 40 characters.</summary>
+        [JsonProperty("label")] public string? Label { get; set; }
+        /// <summary>Base units; the amounts must add up to Total exactly.</summary>
+        [JsonProperty("amount")] public string? Amount { get; set; }
+    }
+
+    /// <summary>Body of POST /v1/splits. Set Participants (equal shares) or Shares.</summary>
+    public class CreateSplitParams
+    {
+        /// <summary>Address, ENS name or .sol name of whoever is owed.</summary>
+        [JsonProperty("recipient")] public string Recipient { get; set; } = "";
+        /// <summary>Chain slug or id they receive on.</summary>
+        [JsonProperty("chain")] public string Chain { get; set; } = "";
+        /// <summary>Listed token symbol or address on that chain.</summary>
+        [JsonProperty("token")] public string Token { get; set; } = "";
+        /// <summary>Base units of Token.</summary>
+        [JsonProperty("total")] public string Total { get; set; } = "";
+        /// <summary>Equal shares for this many people (2-50).</summary>
+        [JsonProperty("participants")] public int? Participants { get; set; }
+        /// <summary>One entry per person (2-50).</summary>
+        [JsonProperty("shares")] public List<SplitShareInput>? Shares { get; set; }
+        /// <summary>Plain text, kept to 140 characters.</summary>
+        [JsonProperty("note")] public string? Note { get; set; }
+    }
+
+    /// <summary>
+    /// Body of PATCH /v1/splits/{id}: only non-null fields are sent. An empty Note clears it (sends null).
+    /// Amounts can't change.
+    /// </summary>
+    public class UpdateSplitParams
+    {
+        public string? Note { get; set; }
+        /// <summary>One label per share.</summary>
+        public List<string>? Labels { get; set; }
+        /// <summary>See <see cref="SplitStatuses"/>; "closed" stops payments.</summary>
+        public string? Status { get; set; }
+
+        internal JObject ToJson() => new Patch()
+            .Nullable("note", Note)
+            .Set("labels", Labels == null ? null : Patch.Strings(Labels))
+            .Set("status", Status)
+            .Body;
+    }
+
+    public class SplitToken
+    {
+        [JsonProperty("address")] public string Address { get; set; } = "";
+        [JsonProperty("symbol")] public string Symbol { get; set; } = "";
+        [JsonProperty("decimals")] public int Decimals { get; set; }
+    }
+
+    public class SplitShare
+    {
+        /// <summary>From 0; pass as QuoteParams.SplitShare.</summary>
+        [JsonProperty("index")] public int Index { get; set; }
+        [JsonProperty("label")] public string Label { get; set; } = "";
+        [JsonProperty("amount")] public string Amount { get; set; } = "";
+        /// <summary>Base units delivered by filled orders for this share.</summary>
+        [JsonProperty("received")] public string Received { get; set; } = "0";
+        /// <summary>"unpaid", "partial" or "paid".</summary>
+        [JsonProperty("status")] public string Status { get; set; } = "";
+        [JsonProperty("payments")] public int Payments { get; set; }
+        [JsonProperty("pending")] public int Pending { get; set; }
+    }
+
+    /// <summary>A split: Recipient is owed Total of Token on Chain, divided into Shares.</summary>
+    public class Split
+    {
+        [JsonProperty("id")] public string Id { get; set; } = "";
+        /// <summary>The split's page.</summary>
+        [JsonProperty("url")] public string Url { get; set; } = "";
+        /// <summary>See <see cref="SplitStatuses"/>.</summary>
+        [JsonProperty("status")] public string Status { get; set; } = "";
+        [JsonProperty("note")] public string? Note { get; set; }
+        [JsonProperty("recipient")] public string Recipient { get; set; } = "";
+        [JsonProperty("recipientName")] public string? RecipientName { get; set; }
+        [JsonProperty("chainId")] public long ChainId { get; set; }
+        [JsonProperty("chain")] public string Chain { get; set; } = "";
+        [JsonProperty("token")] public SplitToken Token { get; set; } = new SplitToken();
+        [JsonProperty("total")] public string Total { get; set; } = "";
+        [JsonProperty("collected")] public string Collected { get; set; } = "0";
+        [JsonProperty("paidCount")] public int PaidCount { get; set; }
+        [JsonProperty("shares")] public List<SplitShare> Shares { get; set; } = new List<SplitShare>();
+        [JsonProperty("createdAt")] public string CreatedAt { get; set; } = "";
+        [JsonProperty("updatedAt")] public string UpdatedAt { get; set; } = "";
+    }
+
+    /// <summary>A new split with its edit secret, shown only once (LayerHop stores its hash).</summary>
+    public class SplitCreated : Split
+    {
+        /// <summary>Pass to UpdateSplitAsync. Keep it secret.</summary>
+        [JsonProperty("editToken")] public string EditToken { get; set; } = "";
+        /// <summary>The split's page with the secret in the URL fragment.</summary>
+        [JsonProperty("editUrl")] public string EditUrl { get; set; } = "";
+    }
+
+    public class TipJarMessage
+    {
+        [JsonProperty("text")] public string Text { get; set; } = "";
+        /// <summary>ISO 8601.</summary>
+        [JsonProperty("at")] public string At { get; set; } = "";
+    }
+
+    /// <summary>Body of GET /v1/tip-jars/{address}.</summary>
+    public class TipJar
+    {
+        [JsonProperty("address")] public string Address { get; set; } = "";
+        /// <summary>Distinct wallets with a filled tip.</summary>
+        [JsonProperty("tippers")] public int Tippers { get; set; }
+        /// <summary>Filled tips.</summary>
+        [JsonProperty("tips")] public int Tips { get; set; }
+        /// <summary>The latest 10 messages.</summary>
+        [JsonProperty("messages")] public List<TipJarMessage> Messages { get; set; } = new List<TipJarMessage>();
+    }
+
+    /// <summary>One payout row: Amount is in human units of Token ("25", "0.5").</summary>
+    public class PayoutRowInput
+    {
+        /// <summary>Address, ENS name or .sol name.</summary>
+        [JsonProperty("recipient")] public string Recipient { get; set; } = "";
+        /// <summary>Human units, a dot for decimals.</summary>
+        [JsonProperty("amount"), JsonConverter(typeof(NumStringConverter))] public string Amount { get; set; } = "";
+        /// <summary>Symbol or address.</summary>
+        [JsonProperty("token")] public string Token { get; set; } = "";
+        /// <summary>Chain slug or id.</summary>
+        [JsonProperty("chain"), JsonConverter(typeof(NumStringConverter))] public string Chain { get; set; } = "";
+        [JsonProperty("label")] public string? Label { get; set; }
+    }
+
+    /// <summary>Body of POST /v1/payouts/plan. Set Rows or Csv ("recipient,amount,token,chain[,label]" lines).</summary>
+    public class PlanPayoutsParams
+    {
+        /// <summary>The chain the payer pays from.</summary>
+        [JsonProperty("srcChain")] public string SrcChain { get; set; } = "";
+        /// <summary>The token the payer pays with (listed).</summary>
+        [JsonProperty("srcToken")] public string SrcToken { get; set; } = "";
+        /// <summary>The payer's address on SrcChain.</summary>
+        [JsonProperty("sender")] public string Sender { get; set; } = "";
+        /// <summary>Up to 100 rows.</summary>
+        [JsonProperty("rows")] public List<PayoutRowInput>? Rows { get; set; }
+        [JsonProperty("csv")] public string? Csv { get; set; }
+    }
+
+    public class PayoutToken
+    {
+        [JsonProperty("chainId")] public long ChainId { get; set; }
+        [JsonProperty("address")] public string Address { get; set; } = "";
+        [JsonProperty("symbol")] public string Symbol { get; set; } = "";
+        [JsonProperty("decimals")] public int Decimals { get; set; }
+        /// <summary>USD price when known.</summary>
+        [JsonProperty("usd")] public double? Usd { get; set; }
+    }
+
+    public class PayoutRowError
+    {
+        [JsonProperty("code")] public string Code { get; set; } = "";
+        [JsonProperty("message")] public string Message { get; set; } = "";
+    }
+
+    public class PayoutRecipient
+    {
+        [JsonProperty("address")] public string Address { get; set; } = "";
+        [JsonProperty("name")] public string? Name { get; set; }
+    }
+
+    /// <summary>One checked row: Ok with the resolved details, or Error.</summary>
+    public class PayoutPlanRow
+    {
+        [JsonProperty("index")] public int Index { get; set; }
+        /// <summary>1-based CSV line (0 for JSON rows).</summary>
+        [JsonProperty("line")] public int Line { get; set; }
+        [JsonProperty("input")] public PayoutRowInput Input { get; set; } = new PayoutRowInput();
+        [JsonProperty("ok")] public bool Ok { get; set; }
+        [JsonProperty("error")] public PayoutRowError? Error { get; set; }
+        [JsonProperty("recipient")] public PayoutRecipient? Recipient { get; set; }
+        [JsonProperty("chainId")] public long? ChainId { get; set; }
+        [JsonProperty("chain")] public string? Chain { get; set; }
+        [JsonProperty("token")] public PayoutToken? Token { get; set; }
+        /// <summary>Base units of Token.</summary>
+        [JsonProperty("amount")] public string? Amount { get; set; }
+        /// <summary>"transfer" or "route".</summary>
+        [JsonProperty("kind")] public string? Kind { get; set; }
+    }
+
+    public class PayoutSource
+    {
+        [JsonProperty("chainId")] public long ChainId { get; set; }
+        [JsonProperty("chain")] public string Chain { get; set; } = "";
+        [JsonProperty("sender")] public string Sender { get; set; } = "";
+        [JsonProperty("token")] public PayoutToken Token { get; set; } = new PayoutToken();
+    }
+
+    /// <summary>A batch of plain transfers (row indices); build it with BuildPayoutTransfersAsync.</summary>
+    public class PayoutTransferBatch
+    {
+        [JsonProperty("chainId")] public long ChainId { get; set; }
+        [JsonProperty("token")] public string Token { get; set; } = "";
+        [JsonProperty("rows")] public List<int> Rows { get; set; } = new List<int>();
+        [JsonProperty("total")] public string Total { get; set; } = "";
+    }
+
+    /// <summary>Routed rows of one destination chain: quote each with QuoteAsync and Purpose = "payout".</summary>
+    public class PayoutRouteGroup
+    {
+        [JsonProperty("chainId")] public long ChainId { get; set; }
+        [JsonProperty("rows")] public List<int> Rows { get; set; } = new List<int>();
+    }
+
+    public class PayoutTotal
+    {
+        [JsonProperty("chainId")] public long ChainId { get; set; }
+        [JsonProperty("token")] public string Token { get; set; } = "";
+        [JsonProperty("symbol")] public string Symbol { get; set; } = "";
+        [JsonProperty("decimals")] public int Decimals { get; set; }
+        [JsonProperty("amount")] public string Amount { get; set; } = "";
+        [JsonProperty("formatted")] public string Formatted { get; set; } = "";
+        [JsonProperty("rows")] public int Rows { get; set; }
+    }
+
+    /// <summary>Body of POST /v1/payouts/plan: every row checked, the valid ones grouped.</summary>
+    public class PayoutPlan
+    {
+        [JsonProperty("source")] public PayoutSource Source { get; set; } = new PayoutSource();
+        [JsonProperty("rows")] public List<PayoutPlanRow> Rows { get; set; } = new List<PayoutPlanRow>();
+        [JsonProperty("transfers")] public List<PayoutTransferBatch> Transfers { get; set; } = new List<PayoutTransferBatch>();
+        [JsonProperty("routes")] public List<PayoutRouteGroup> Routes { get; set; } = new List<PayoutRouteGroup>();
+        [JsonProperty("transferTotal")] public string TransferTotal { get; set; } = "0";
+        [JsonProperty("totals")] public List<PayoutTotal> Totals { get; set; } = new List<PayoutTotal>();
+        [JsonProperty("valid")] public int Valid { get; set; }
+        [JsonProperty("invalid")] public int Invalid { get; set; }
+        [JsonProperty("warnings")] public List<string> Warnings { get; set; } = new List<string>();
+    }
+
+    public class PayoutTransfer
+    {
+        /// <summary>An address (resolve names with the plan first).</summary>
+        [JsonProperty("recipient")] public string Recipient { get; set; } = "";
+        /// <summary>Base units.</summary>
+        [JsonProperty("amount")] public string Amount { get; set; } = "";
+    }
+
+    /// <summary>Body of POST /v1/payouts/transfers: at most 20 transfers on EVM chains and 8 on Solana.</summary>
+    public class BuildPayoutTransfersParams
+    {
+        [JsonProperty("chain")] public string Chain { get; set; } = "";
+        [JsonProperty("token")] public string Token { get; set; } = "";
+        [JsonProperty("sender")] public string Sender { get; set; } = "";
+        [JsonProperty("transfers")] public List<PayoutTransfer> Transfers { get; set; } = new List<PayoutTransfer>();
+    }
+
+    /// <summary>
+    /// Unsigned transfers for the payer's wallet: EVM Calls (one per transfer, in order) or a Solana
+    /// SerializedTx (base64). Check each against its row before the wallet signs.
+    /// </summary>
+    public class PayoutTransfers
+    {
+        /// <summary>"evm" or "svm".</summary>
+        [JsonProperty("vm")] public string Vm { get; set; } = "";
+        [JsonProperty("chainId")] public long ChainId { get; set; }
+        [JsonProperty("token")] public PayoutToken Token { get; set; } = new PayoutToken();
+        [JsonProperty("calls")] public List<EvmCall>? Calls { get; set; }
+        [JsonProperty("serializedTx")] public string? SerializedTx { get; set; }
     }
 }
