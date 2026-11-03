@@ -232,7 +232,7 @@ and several `v1` values are accepted, so secrets can be rotated.
 In **Window > Package Manager > + > Add package from git URL...** enter:
 
 ```
-https://github.com/layerhop/layerhop-csharp.git?path=src/LayerHop#v0.7.0
+https://github.com/layerhop/layerhop-csharp.git?path=src/LayerHop#v0.8.0
 ```
 
 or add it to `Packages/manifest.json`:
@@ -240,7 +240,7 @@ or add it to `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.layerhop.sdk": "https://github.com/layerhop/layerhop-csharp.git?path=src/LayerHop#v0.7.0"
+    "com.layerhop.sdk": "https://github.com/layerhop/layerhop-csharp.git?path=src/LayerHop#v0.8.0"
   }
 }
 ```
