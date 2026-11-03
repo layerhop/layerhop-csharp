@@ -34,6 +34,7 @@ namespace LayerHop
         public const string GaslessPending = "GASLESS_PENDING";
         public const string GaslessFailed = "GASLESS_FAILED";
         public const string MarketUnavailable = "MARKET_UNAVAILABLE";
+        public const string LimitOrderRejected = "LIMIT_ORDER_REJECTED";
         public const string Internal = "INTERNAL";
     }
 
