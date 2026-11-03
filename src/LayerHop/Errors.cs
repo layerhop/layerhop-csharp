@@ -19,6 +19,7 @@ namespace LayerHop
         public const string CallsReverted = "CALLS_REVERTED";
         public const string LaunchImageInvalid = "LAUNCH_IMAGE_INVALID";
         public const string NoRoute = "NO_ROUTE";
+        public const string RouteExcluded = "ROUTE_EXCLUDED";
         public const string QuoteNotFound = "QUOTE_NOT_FOUND";
         public const string QuoteExpired = "QUOTE_EXPIRED";
         public const string OrderNotFound = "ORDER_NOT_FOUND";
