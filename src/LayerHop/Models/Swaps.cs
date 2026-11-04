@@ -233,15 +233,16 @@ namespace LayerHop
         public const string Fund = "fund";
     }
 
-    /// <summary>Inputs of GET /v1/quote.</summary>
-    public class QuoteParams
+    /// <summary>
+    /// Inputs shared by GET /v1/quote and GET /v1/quote/stream: the route, the parties and attribution.
+    /// Use <see cref="QuoteParams"/> (an input amount) or <see cref="ExactOutputQuoteParams"/> (an exact output).
+    /// </summary>
+    public abstract class QuoteParamsBase
     {
         /// <summary>Chain id or slug ("base", "solana", "8453").</summary>
         public string SrcChain { get; set; } = "";
         /// <summary>Symbol from the token list ("USDC") or an address / mint.</summary>
         public string SrcToken { get; set; } = "";
-        /// <summary>Integer string in base units of SrcToken.</summary>
-        public string Amount { get; set; } = "";
         /// <summary>Destination chain id or slug.</summary>
         public string DstChain { get; set; } = "";
         /// <summary>Destination token.</summary>
@@ -252,6 +253,31 @@ namespace LayerHop
         public string Recipient { get; set; } = "";
         /// <summary>Slippage in bps; 50 when null.</summary>
         public int? SlippageBps { get; set; }
+        /// <summary>Wallet that referred the user (attribution only). Invalid values are ignored.</summary>
+        public string? Referrer { get; set; }
+        /// <summary>Copy this trade: a trade card's quote id or a wallet (attribution only).</summary>
+        public string? CopyOf { get; set; }
+        /// <summary>What the payment is for; see <see cref="QuotePurposes"/>.</summary>
+        public string? Purpose { get; set; }
+        /// <summary>Pay one share of a split (with <see cref="SplitShare"/>).</summary>
+        public string? SplitId { get; set; }
+        /// <summary>The share's index in the split, from 0.</summary>
+        public int? SplitShare { get; set; }
+        /// <summary>A message on a tip or split payment (kept to 140 characters).</summary>
+        public string? Note { get; set; }
+        /// <summary>Never use these providers (provider ids, e.g. "relay"). No route left: ROUTE_EXCLUDED.</summary>
+        public List<string>? ExcludeProviders { get; set; }
+        /// <summary>Never route through these bridges (e.g. "stargate").</summary>
+        public List<string>? ExcludeBridges { get; set; }
+        /// <summary>Never swap through these exchanges (e.g. "1inch").</summary>
+        public List<string>? ExcludeExchanges { get; set; }
+    }
+
+    /// <summary>Inputs of GET /v1/quote with an input amount.</summary>
+    public class QuoteParams : QuoteParamsBase
+    {
+        /// <summary>Integer string in base units of SrcToken.</summary>
+        public string Amount { get; set; } = "";
         /// <summary>
         /// Also deliver native gas to Recipient on the destination chain, worth $2 by default (sent as
         /// gasOnArrival=true). Ignored for same-chain swaps, non-EVM destinations and native outputs;
@@ -266,18 +292,30 @@ namespace LayerHop
         /// <see cref="LayerHopClient.BuildGaslessAsync"/>, not BuildTxAsync.
         /// </summary>
         public bool Gasless { get; set; }
-        /// <summary>Wallet that referred the user (attribution only). Invalid values are ignored.</summary>
-        public string? Referrer { get; set; }
-        /// <summary>Copy this trade: a trade card's quote id or a wallet (attribution only).</summary>
-        public string? CopyOf { get; set; }
-        /// <summary>What the payment is for; see <see cref="QuotePurposes"/>.</summary>
-        public string? Purpose { get; set; }
-        /// <summary>Pay one share of a split (with <see cref="SplitShare"/>).</summary>
-        public string? SplitId { get; set; }
-        /// <summary>The share's index in the split, from 0.</summary>
-        public int? SplitShare { get; set; }
-        /// <summary>A message on a tip or split payment (kept to 140 characters).</summary>
-        public string? Note { get; set; }
+    }
+
+    /// <summary>
+    /// Receive an exact amount (GET /v1/quote with dstAmount): the recipient gets DstAmount; each quote reports
+    /// <see cref="Quote.SrcAmount"/> (what the sender pays) and <see cref="Quote.SrcAmountMax"/> (the most the tx
+    /// can take, for balance checks). Only providers that quote a fixed output answer. No gas on arrival or gasless.
+    /// </summary>
+    public class ExactOutputQuoteParams : QuoteParamsBase
+    {
+        /// <summary>The exact base units of DstToken the recipient receives.</summary>
+        public string DstAmount { get; set; } = "";
+    }
+
+    /// <summary>Options of <see cref="LayerHopClient.StreamQuotes"/>.</summary>
+    public class QuoteStreamOptions
+    {
+        /// <summary>Refresh interval in ms (API default 10000, minimum 5000). Each refresh counts as one request against your rate limit.</summary>
+        public int? IntervalMs { get; set; }
+    }
+
+    /// <summary>One "quote" event of GET /v1/quote/stream: a full quote response plus its sequence number (1, 2, ...).</summary>
+    public class QuoteStreamUpdate : QuoteResponse
+    {
+        [JsonProperty("seq")] public int Seq { get; set; }
     }
 
     /// <summary>One contract call on the destination chain. msg.sender is the provider's executor, not the user.</summary>
@@ -411,8 +449,10 @@ namespace LayerHop
         [JsonProperty("expiresAt")] public long ExpiresAt { get; set; }
         /// <summary>Set when gas on arrival was requested and this route includes it.</summary>
         [JsonProperty("gasOnArrival")] public GasOnArrival? GasOnArrival { get; set; }
-        /// <summary>What Sender pays, fees included (destination-calls quotes only).</summary>
+        /// <summary>What Sender pays, fees included (exact-output and destination-calls quotes only).</summary>
         [JsonProperty("srcAmount")] public string? SrcAmount { get; set; }
+        /// <summary>Exact-output quotes: the most the transaction can take from Sender, slippage included (at least SrcAmount). Check balances against it.</summary>
+        [JsonProperty("srcAmountMax")] public string? SrcAmountMax { get; set; }
         /// <summary>Destination calls and their simulation (destination-calls quotes only).</summary>
         [JsonProperty("calls")] public DestinationCallsPlan? Calls { get; set; }
         /// <summary>Set on gasless quotes; build them with <see cref="LayerHopClient.BuildGaslessAsync"/>.</summary>
@@ -452,6 +492,8 @@ namespace LayerHop
         [JsonProperty("livemode")] public bool? Livemode { get; set; }
         /// <summary>Present only when the request was not served exactly as asked.</summary>
         [JsonProperty("warnings")] public List<QuoteWarning>? Warnings { get; set; }
+        /// <summary>Address screening (D-069): listed addresses of this request; present once the API has a list loaded.</summary>
+        [JsonProperty("screening")] public ScreeningAnnotation? Screening { get; set; }
     }
 
     /// <summary>

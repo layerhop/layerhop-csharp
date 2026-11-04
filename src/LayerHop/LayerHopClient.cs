@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -39,7 +40,7 @@ namespace LayerHop
         /// <summary>The hosted API origin.</summary>
         public const string DefaultBaseUrl = "https://api.layerhop.com";
         /// <summary>SDK version, sent in the User-Agent header.</summary>
-        public const string Version = "0.8.0";
+        public const string Version = "0.9.0";
 
         private static readonly HttpMethod Patch = new HttpMethod("PATCH");
 
@@ -267,13 +268,26 @@ namespace LayerHop
         }
 
         /// <summary>Asks every provider for a price (GET /v1/quote). Best is the highest output for the user.</summary>
-        public Task<QuoteResponse> QuoteAsync(QuoteParams p, CancellationToken ct = default)
+        public Task<QuoteResponse> QuoteAsync(QuoteParams p, CancellationToken ct = default) =>
+            SendAsync<QuoteResponse>(HttpMethod.Get, "/quote", QuoteQuery(p), null, ct);
+
+        /// <summary>
+        /// Receive an exact amount (GET /v1/quote with dstAmount): the recipient gets DstAmount of DstToken. Each
+        /// quote carries SrcAmount (what Sender pays) and SrcAmountMax (the most the tx can take, slippage included:
+        /// check the balance against it). Only providers that quote a fixed output answer.
+        /// </summary>
+        public Task<QuoteResponse> QuoteExactOutputAsync(ExactOutputQuoteParams p, CancellationToken ct = default) =>
+            SendAsync<QuoteResponse>(HttpMethod.Get, "/quote", QuoteQuery(p), null, ct);
+
+        /// <summary>GET /v1/quote and GET /v1/quote/stream query parameters.</summary>
+        private Query QuoteQuery(QuoteParamsBase p)
         {
             var q = new Query()
                 .Add("srcChain", p.SrcChain)
-                .Add("srcToken", p.SrcToken)
-                .Add("amount", p.Amount)
-                .Add("dstChain", p.DstChain)
+                .Add("srcToken", p.SrcToken);
+            if (p is ExactOutputQuoteParams eo) q.Add("dstAmount", eo.DstAmount);
+            else if (p is QuoteParams ip) q.Add("amount", ip.Amount);
+            q.Add("dstChain", p.DstChain)
                 .Add("dstToken", p.DstToken)
                 .Add("sender", p.Sender)
                 .Add("recipient", p.Recipient)
@@ -281,18 +295,58 @@ namespace LayerHop
                 .Add("channel", _channel)
                 .Add("integrator", _integrator)
                 .Add("integratorFeeBps", _integratorFeeBps);
-            if (p.GasOnArrivalUsd.HasValue && p.GasOnArrivalUsd.Value > 0)
-                q.Add("gasOnArrivalUsd", p.GasOnArrivalUsd.Value.ToString("R", CultureInfo.InvariantCulture));
-            else if (p.GasOnArrival)
-                q.Add("gasOnArrival", "true");
-            if (p.Gasless) q.Add("gasless", "true");
+            if (p is QuoteParams qp)
+            {
+                if (qp.GasOnArrivalUsd.HasValue && qp.GasOnArrivalUsd.Value > 0)
+                    q.Add("gasOnArrivalUsd", qp.GasOnArrivalUsd.Value.ToString("R", CultureInfo.InvariantCulture));
+                else if (qp.GasOnArrival)
+                    q.Add("gasOnArrival", "true");
+                if (qp.Gasless) q.Add("gasless", "true");
+            }
             if (!string.IsNullOrEmpty(p.Referrer)) q.Add("referrer", p.Referrer);
             if (!string.IsNullOrEmpty(p.CopyOf)) q.Add("copyOf", p.CopyOf);
             if (!string.IsNullOrEmpty(p.Purpose)) q.Add("purpose", p.Purpose);
             q.Add("splitId", p.SplitId).Add("splitShare", p.SplitShare);
             if (!string.IsNullOrEmpty(p.Note)) q.Add("note", p.Note);
-            return SendAsync<QuoteResponse>(HttpMethod.Get, "/quote", q, null, ct);
+            AddList(q, "excludeProviders", p.ExcludeProviders);
+            AddList(q, "excludeBridges", p.ExcludeBridges);
+            AddList(q, "excludeExchanges", p.ExcludeExchanges);
+            return q;
         }
+
+        private static void AddList(Query q, string key, List<string>? values)
+        {
+            if (values == null || values.Count == 0) return;
+            q.Add(key, string.Join(",", values));
+        }
+
+        /// <summary>
+        /// Live quotes (GET /v1/quote/stream, Server-Sent Events, D-068): yields a fresh ranked quote set whenever the
+        /// best route or any amount changes (and before the shown quote expires). Ends after the stream's lifetime
+        /// (5 minutes). A failed refresh throws <see cref="LayerHopApiException"/> with its stable code (NO_ROUTE,
+        /// RATE_LIMITED, QUOTA_EXCEEDED, ADDRESS_SANCTIONED, ...). Stop by breaking out of the loop or cancelling
+        /// <paramref name="ct"/>. Every refresh counts as one request; at most 3 open streams per key. Same
+        /// parameters as <see cref="QuoteAsync"/> / <see cref="QuoteExactOutputAsync"/>.
+        /// </summary>
+        public async IAsyncEnumerable<QuoteStreamUpdate> StreamQuotes(QuoteParamsBase p, QuoteStreamOptions? options = null,
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            var q = QuoteQuery(p);
+            if (options != null && options.IntervalMs.HasValue) q.Add("intervalMs", options.IntervalMs);
+            await foreach (var f in StreamEvents("/quote/stream", q, ct).ConfigureAwait(false))
+            {
+                if (f.Event == "quote") yield return DecodeEvent<QuoteStreamUpdate>(f.Data, "/quote/stream");
+                else if (f.Event == "error") throw StreamError(f.Data);
+                else if (f.Event == "end") yield break;
+            }
+        }
+
+        /// <summary>
+        /// Checks up to 100 addresses against the OFAC SDN list (POST /v1/screen, D-069). A list lookup only: no
+        /// clustering or risk scoring. Results are in the order sent.
+        /// </summary>
+        public Task<ScreenResponse> ScreenAsync(IEnumerable<string> addresses, CancellationToken ct = default) =>
+            SendAsync<ScreenResponse>(HttpMethod.Post, "/screen", null, new JObject { ["addresses"] = new JArray(addresses) }, ct);
 
         /// <summary>
         /// Quotes an exact output for destination calls (POST /v1/quote): DstAmount of DstToken is delivered to
@@ -355,6 +409,13 @@ namespace LayerHop
             if (r.Gasless == null) throw new InvalidOperationException("layerhop: this quote is not gasless; use BuildTxAsync");
             return r.Gasless;
         }
+
+        /// <summary>
+        /// The whole POST /v1/orders response: Tx (or Gasless for a gasless quote) plus Screening, the address
+        /// screening of the order (D-069). <see cref="BuildTxAsync"/> returns only the Tx.
+        /// </summary>
+        public Task<BuildOrderResponse> BuildOrderAsync(string quoteId, CancellationToken ct = default) =>
+            SendAsync<BuildOrderResponse>(HttpMethod.Post, "/orders", null, new JObject { ["quoteId"] = quoteId }, ct);
 
         /// <summary>
         /// Gasless: sends the wallet's eth_signTypedData_v4 signatures (POST /v1/orders/gasless); the provider's
@@ -471,6 +532,25 @@ namespace LayerHop
         /// <summary>Prices paying a session with a token (POST /v1/checkout/sessions/{id}/quote). Public. Pay with BuildTxAsync + ReportSubmittedAsync.</summary>
         public Task<CheckoutQuoteResponse> QuoteCheckoutSessionAsync(string id, CheckoutQuoteParams p, CancellationToken ct = default) =>
             SendAsync<CheckoutQuoteResponse>(HttpMethod.Post, "/checkout/sessions/" + Seg(id) + "/quote", null, p, ct);
+
+        /// <summary>
+        /// Public: shows a "Send to address" QR for the session (POST /v1/checkout/sessions/{id}/transfer, D-064;
+        /// idempotent). Check TransferAvailable first. Returns the session with its Transfer.
+        /// </summary>
+        public Task<CheckoutSession> StartCheckoutTransferAsync(string id, CancellationToken ct = default) =>
+            SendAsync<CheckoutSession>(HttpMethod.Post, "/checkout/sessions/" + Seg(id) + "/transfer", null, EmptyBody, ct);
+
+        /// <summary>
+        /// Public: shows (or, once expired, refreshes) a Bitcoin deposit address for the session
+        /// (POST /v1/checkout/sessions/{id}/bitcoin, D-067). Check BitcoinAvailable first. <paramref name="refundAddress"/>:
+        /// an optional Bitcoin address for refunds (recommended when paying from an exchange). Returns the session with its Bitcoin.
+        /// </summary>
+        public Task<CheckoutSession> StartCheckoutBitcoinAsync(string id, string? refundAddress = null, CancellationToken ct = default)
+        {
+            var body = new JObject();
+            if (!string.IsNullOrEmpty(refundAddress)) body["refundAddress"] = refundAddress;
+            return SendAsync<CheckoutSession>(HttpMethod.Post, "/checkout/sessions/" + Seg(id) + "/bitcoin", null, body, ct);
+        }
 
         /// <summary>Creates a product (POST /v1/checkout/products). Needs an API key.</summary>
         public Task<CheckoutProduct> CreateCheckoutProductAsync(CreateCheckoutProductParams p, CancellationToken ct = default) =>
@@ -741,5 +821,227 @@ namespace LayerHop
         /// <summary>Creates a sample webhook event in test mode (POST /v1/webhooks/trigger). Test keys only.</summary>
         public Task<TriggerWebhookResponse> TriggerWebhookEventAsync(string eventType, CancellationToken ct = default) =>
             SendAsync<TriggerWebhookResponse>(HttpMethod.Post, "/webhooks/trigger", null, new JObject { ["type"] = eventType }, ct);
+
+        /// <summary>
+        /// Sends an event of the key's mode again (POST /v1/webhooks/events/{id}/resend), same id and payload: to
+        /// <paramref name="endpointId"/>, or to every subscribed endpoint, and to open webhook streams. Events are kept 30 days.
+        /// </summary>
+        public Task<WebhookResendResult> ResendWebhookEventAsync(string eventId, string? endpointId = null, CancellationToken ct = default)
+        {
+            var body = new JObject();
+            if (!string.IsNullOrEmpty(endpointId)) body["endpointId"] = endpointId;
+            return SendAsync<WebhookResendResult>(HttpMethod.Post, "/webhooks/events/" + Seg(eventId) + "/resend", null, body, ct);
+        }
+
+        /// <summary>
+        /// Your account's webhook events of the key's mode as they are created, with the exact payloads, plus events
+        /// resent later (GET /v1/webhooks/stream, Server-Sent Events; what <c>layerhop listen</c> uses).
+        /// <paramref name="since"/> (ISO 8601, at most an hour back) first replays missed events. Runs until
+        /// <paramref name="ct"/> is cancelled or the server closes the stream.
+        /// </summary>
+        public async IAsyncEnumerable<WebhookEvent> StreamWebhookEvents(string? since = null, [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            await foreach (var f in StreamEvents("/webhooks/stream", new Query().Add("since", string.IsNullOrEmpty(since) ? null : since), ct).ConfigureAwait(false))
+            {
+                if (f.Event == "event") yield return DecodeEvent<WebhookEvent>(f.Data, "/webhooks/stream");
+            }
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // Usage
+        // -----------------------------------------------------------------------------------------
+
+        private sealed class UsageErrorsBody { [JsonProperty("errors")] public List<UsageError> Errors { get; set; } = new List<UsageError>(); }
+
+        /// <summary>
+        /// Requests of the key's account and mode per hour or day (GET /v1/usage): status classes, p50 / p95 latency,
+        /// endpoint groups and error codes. Defaults: the last 30 days by day (48 hours by hour).
+        /// </summary>
+        public Task<UsageReport> GetUsageAsync(UsageParams? p = null, CancellationToken ct = default)
+        {
+            p ??= new UsageParams();
+            var q = new Query().Add("bucket", p.Bucket).Add("from", p.From).Add("to", p.To).Add("keyId", p.KeyId);
+            return SendAsync<UsageReport>(HttpMethod.Get, "/usage", q, null, ct);
+        }
+
+        /// <summary>The newest failed requests with a stable error code, last 30 days (GET /v1/usage/errors).</summary>
+        public async Task<List<UsageError>> ListUsageErrorsAsync(UsageErrorsParams? p = null, CancellationToken ct = default)
+        {
+            p ??= new UsageErrorsParams();
+            var q = new Query().Add("code", p.Code).Add("keyId", p.KeyId).Add("limit", p.Limit);
+            return (await SendAsync<UsageErrorsBody>(HttpMethod.Get, "/usage/errors", q, null, ct).ConfigureAwait(false)).Errors;
+        }
+
+        // -----------------------------------------------------------------------------------------
+        // x402 pay-per-request (D-066)
+        // -----------------------------------------------------------------------------------------
+
+        /// <summary>The schemes and networks the x402 facilitator verifies and settles (GET /v1/x402/supported). Public.</summary>
+        public Task<X402Supported> GetX402SupportedAsync(CancellationToken ct = default) =>
+            SendAsync<X402Supported>(HttpMethod.Get, "/x402/supported", null, null, ct);
+
+        /// <summary>
+        /// The x402 payment requirements to answer 402 Payment Required with, for a price you net per request
+        /// (POST /v1/x402/requirements). PayTo in the requirements is your own fee-splitting deposit address, and
+        /// the payer signs your price plus LayerHop's fee on top. Needs an API key.
+        /// </summary>
+        public Task<X402RequirementsResponse> CreateX402RequirementsAsync(X402RequirementsParams p, CancellationToken ct = default) =>
+            SendAsync<X402RequirementsResponse>(HttpMethod.Post, "/x402/requirements", null, p, ct);
+
+        /// <summary>
+        /// Verifies an x402 payment to your requirements (POST /v1/x402/verify, read-only): signature, amount, window,
+        /// nonce, balance and an eth_call of the transfer. IsValid false carries an InvalidReason.
+        /// </summary>
+        public Task<X402VerifyResponse> VerifyX402PaymentAsync(X402FacilitatorParams p, CancellationToken ct = default) =>
+            SendAsync<X402VerifyResponse>(HttpMethod.Post, "/x402/verify", null, p, ct);
+
+        /// <summary>
+        /// Settles an x402 payment (POST /v1/x402/settle, live keys): verifies again and submits the transfer from
+        /// LayerHop's settler. ErrorReason "settlement_pending": sent, receipt not in yet (x402.payment.settled fires
+        /// later). FORBIDDEN while settlement is not enabled on the API.
+        /// </summary>
+        public Task<X402SettleResponse> SettleX402PaymentAsync(X402FacilitatorParams p, CancellationToken ct = default) =>
+            SendAsync<X402SettleResponse>(HttpMethod.Post, "/x402/settle", null, p, ct);
+
+        /// <summary>x402 payments settled through LayerHop for your account, newest first (GET /v1/x402/payments).</summary>
+        public Task<ListX402PaymentsResponse> ListX402PaymentsAsync(ListX402PaymentsParams? p = null, CancellationToken ct = default)
+        {
+            p ??= new ListX402PaymentsParams();
+            var q = new Query().Add("status", p.Status).Add("cursor", p.Cursor).Add("limit", p.Limit);
+            return SendAsync<ListX402PaymentsResponse>(HttpMethod.Get, "/x402/payments", q, null, ct);
+        }
+
+        /// <summary>GET /v1/x402/payments/{id}.</summary>
+        public Task<X402Payment> GetX402PaymentAsync(string id, CancellationToken ct = default) =>
+            SendAsync<X402Payment>(HttpMethod.Get, "/x402/payments/" + Seg(id), null, null, ct);
+
+        // -----------------------------------------------------------------------------------------
+        // Server-Sent Events
+        // -----------------------------------------------------------------------------------------
+
+        private sealed class SseFrame
+        {
+            public SseFrame(string ev, string data)
+            {
+                Event = ev;
+                Data = data;
+            }
+
+            public string Event { get; }
+            public string Data { get; }
+        }
+
+        /// <summary>
+        /// Reads a Server-Sent Events stream and yields every frame that has data (comments such as pings are
+        /// skipped). A non-2xx answer throws <see cref="LayerHopApiException"/> like any other call.
+        /// </summary>
+        private async IAsyncEnumerable<SseFrame> StreamEvents(string path, Query? query, [EnumeratorCancellation] CancellationToken ct)
+        {
+            using (var req = new HttpRequestMessage(HttpMethod.Get, _baseUrl + "/v1" + path + (query?.ToString() ?? "")))
+            {
+                req.Headers.TryAddWithoutValidation("accept", "text/event-stream");
+                req.Headers.TryAddWithoutValidation("user-agent", _userAgent);
+                if (_apiKey != null) req.Headers.TryAddWithoutValidation("x-api-key", _apiKey);
+                using (var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false))
+                {
+                    var status = (int)res.StatusCode;
+                    if (status < 200 || status > 299)
+                    {
+                        var text = res.Content == null ? "" : await res.Content.ReadAsStringAsync().ConfigureAwait(false);
+                        throw DecodeError(res, status, text);
+                    }
+                    if (res.Content == null) yield break;
+                    using (var stream = await res.Content.ReadAsStreamAsync().ConfigureAwait(false))
+                    using (var reader = new StreamReader(stream, Encoding.UTF8))
+                    // StreamReader.ReadLineAsync takes no token on netstandard2.1: cancelling closes the stream.
+                    using (ct.Register(() => res.Dispose()))
+                    {
+                        string? name = null;
+                        var data = new StringBuilder();
+                        var hasData = false;
+                        while (true)
+                        {
+                            var line = await ReadLineAsync(reader, ct).ConfigureAwait(false);
+                            if (line == null) yield break; // An unterminated last frame is dropped, as in the SSE spec.
+                            if (line.Length == 0)
+                            {
+                                if (hasData) yield return new SseFrame(name ?? "message", data.ToString());
+                                name = null;
+                                data.Clear();
+                                hasData = false;
+                                continue;
+                            }
+                            if (line[0] == ':') continue;
+                            if (line.StartsWith("event:", StringComparison.Ordinal))
+                            {
+                                name = line.Substring(6).Trim();
+                            }
+                            else if (line.StartsWith("data:", StringComparison.Ordinal))
+                            {
+                                var d = line.Substring(5);
+                                if (d.StartsWith(" ", StringComparison.Ordinal)) d = d.Substring(1);
+                                if (hasData) data.Append('\n');
+                                data.Append(d);
+                                hasData = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        private static async Task<string?> ReadLineAsync(StreamReader reader, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                return await reader.ReadLineAsync().ConfigureAwait(false);
+            }
+            catch (Exception e) when (ct.IsCancellationRequested && (e is ObjectDisposedException || e is IOException || e is HttpRequestException))
+            {
+                throw new OperationCanceledException(ct);
+            }
+        }
+
+        private static T DecodeEvent<T>(string data, string path)
+        {
+            try
+            {
+                return Json.Deserialize<T>(data);
+            }
+            catch (JsonException e)
+            {
+                throw new JsonSerializationException("layerhop: decode GET " + path + " event: " + e.Message, e);
+            }
+        }
+
+        /// <summary>An <c>event: error</c> frame of a stream: <c>{ status, error: { code, message, requestId, details } }</c>.</summary>
+        private static LayerHopApiException StreamError(string data)
+        {
+            var code = "INTERNAL";
+            var message = "Stream failed";
+            var status = 500;
+            string? requestId = null;
+            JObject? details = null;
+            try
+            {
+                if (JToken.Parse(data) is JObject root)
+                {
+                    if (root["status"] is JValue s && s.Type == JTokenType.Integer) status = s.Value<int>();
+                    if (root["error"] is JObject err)
+                    {
+                        if (err["code"] is JValue c && c.Type == JTokenType.String && ((string?)c)?.Length > 0) code = (string)c!;
+                        if (err["message"] is JValue m && m.Type == JTokenType.String && ((string?)m)?.Length > 0) message = (string)m!;
+                        if (err["requestId"] is JValue r && r.Type == JTokenType.String && ((string?)r)?.Length > 0) requestId = (string)r!;
+                        if (err["details"] is JObject d) details = d;
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+                // Not JSON: keep the defaults.
+            }
+            return new LayerHopApiException(code, message, status, requestId, details);
+        }
     }
 }

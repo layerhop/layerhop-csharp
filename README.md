@@ -127,6 +127,47 @@ var q = await lh.QuoteCallsAsync(new CallsQuoteParams
 });
 ```
 
+### Receive an exact amount
+
+`QuoteExactOutputAsync` quotes a fixed output (`DstAmount`): each quote carries `SrcAmount` (what the
+sender pays) and `SrcAmountMax` (the most the transaction can take, slippage included; check the
+balance against it). Only providers that quote a fixed output answer. `QuoteParams` and
+`ExactOutputQuoteParams` both take `ExcludeProviders`, `ExcludeBridges` and `ExcludeExchanges`
+(`ROUTE_EXCLUDED` when nothing is left).
+
+```csharp
+var q = await lh.QuoteExactOutputAsync(new ExactOutputQuoteParams
+{
+    SrcChain = "base", SrcToken = "USDC", DstChain = "arbitrum", DstToken = "USDC", DstAmount = "5000000",
+    Sender = "0xYou", Recipient = "0xYou",
+});
+// q.Best.SrcAmount, q.Best.SrcAmountMax
+```
+
+### Live quotes
+
+`StreamQuotes` reads `GET /v1/quote/stream` (Server-Sent Events) as an `IAsyncEnumerable<QuoteStreamUpdate>`:
+a fresh ranked quote set (`Seq` 1, 2, ...) whenever the best route or an amount changes, until the
+stream's 5-minute lifetime ends. A failed refresh throws `LayerHopApiException` with its stable code
+(`NO_ROUTE`, `RATE_LIMITED`, `QUOTA_EXCEEDED`, `ADDRESS_SANCTIONED`, ...). Every refresh counts as one
+request; at most 3 open streams per key. Takes `QuoteParams` or `ExactOutputQuoteParams`.
+
+```csharp
+using var cts = new CancellationTokenSource();
+await foreach (var u in lh.StreamQuotes(p, new QuoteStreamOptions { IntervalMs = 10000 }, cts.Token))
+    Show(u.Best);   // build u.Best.QuoteId with BuildTxAsync as usual
+```
+
+On Unity WebGL there is no streaming `HttpClient`: poll `QuoteAsync` there instead.
+
+### Address screening
+
+`ScreenAsync(addresses)` checks up to 100 addresses against the OFAC SDN list (`POST /v1/screen`):
+`Results` in order, `List` (null until the API has loaded one) and `Enforced`. Quotes, checkout quotes
+and `BuildOrderAsync` (the whole `POST /v1/orders` response) carry `Screening` with any listed address
+and its role. Where screening is enforced, listed addresses fail with `ErrorCodes.AddressSanctioned`
+(HTTP 451).
+
 ### Tokens: search, lookup, risk
 
 `SearchTokensAsync(chain, q, limit, cursor)` pages and searches a chain's tokens (`NextCursor`).
@@ -163,9 +204,9 @@ and `CancelRecurringOrderAsync(id, wallet)` (returns a cancel tx to sign and sub
 | Area | Methods |
 |---|---|
 | Assets | `GetChainsAsync`, `GetTokensAsync`, `SearchTokensAsync`, `LookupTokenAsync`, `GetTokenRiskAsync`, `GetPricesAsync`, `GetBalancesAsync` |
-| Swaps | `QuoteAsync`, `QuoteCallsAsync`, `BuildTxAsync`, `SubmitAsync`, `ReportSubmittedAsync`, `SimulateAsync`, `GetOrderStatusAsync`, `ListOrdersAsync`, `WatchOrder` / `WatchOrderAsync` |
+| Swaps | `QuoteAsync`, `QuoteExactOutputAsync`, `StreamQuotes`, `QuoteCallsAsync`, `BuildTxAsync`, `BuildOrderAsync`, `SubmitAsync`, `ReportSubmittedAsync`, `SimulateAsync`, `GetOrderStatusAsync`, `ListOrdersAsync`, `WatchOrder` / `WatchOrderAsync` |
 | Gasless | `BuildGaslessAsync`, `SubmitGaslessAsync`, `GetGaslessStatusAsync` |
-| Checkout | `CreateCheckoutSessionAsync`, `GetCheckoutSessionAsync`, `ListCheckoutSessionsAsync`, `ExpireCheckoutSessionAsync`, `QuoteCheckoutSessionAsync` |
+| Checkout | `CreateCheckoutSessionAsync`, `GetCheckoutSessionAsync`, `ListCheckoutSessionsAsync`, `ExpireCheckoutSessionAsync`, `QuoteCheckoutSessionAsync`, `StartCheckoutTransferAsync`, `StartCheckoutBitcoinAsync` |
 | Products | `CreateCheckoutProductAsync`, `GetCheckoutProductAsync`, `ListCheckoutProductsAsync`, `UpdateCheckoutProductAsync`, `StartProductCheckoutAsync` |
 | Refunds | `CreateRefundAsync`, `ListRefundsAsync` |
 | Invoices | `CreateInvoiceAsync`, `GetInvoiceAsync`, `ListInvoicesAsync`, `UpdateInvoiceAsync`, `SendInvoiceAsync`, `VoidInvoiceAsync`, `GetPublicInvoiceAsync`, `PayInvoiceAsync` |
@@ -174,7 +215,11 @@ and `CancelRecurringOrderAsync(id, wallet)` (returns a cancel tx to sign and sub
 | Limit orders (Solana, beta) | `CreateLimitOrderAsync`, `SubmitLimitOrderAsync`, `GetLimitOrderAsync`, `ListLimitOrdersAsync`, `CancelLimitOrderAsync`, `SimulateLimitOrderAsync` |
 | Recurring orders (Solana) | `CreateRecurringOrderAsync`, `SubmitRecurringOrderAsync`, `ListRecurringOrdersAsync`, `CancelRecurringOrderAsync` |
 | Splits, tips, payouts | `CreateSplitAsync`, `GetSplitAsync`, `UpdateSplitAsync`, `GetTipJarAsync`, `PlanPayoutsAsync`, `BuildPayoutTransfersAsync` |
-| Misc | `HealthAsync`, `GetServiceStatusAsync`, `TriggerWebhookEventAsync` |
+| Screening | `ScreenAsync` |
+| x402 (pay per request) | `GetX402SupportedAsync`, `CreateX402RequirementsAsync`, `VerifyX402PaymentAsync`, `SettleX402PaymentAsync`, `ListX402PaymentsAsync`, `GetX402PaymentAsync` |
+| Usage | `GetUsageAsync`, `ListUsageErrorsAsync` |
+| Webhooks | `TriggerWebhookEventAsync`, `ResendWebhookEventAsync`, `StreamWebhookEvents(since)` |
+| Misc | `HealthAsync`, `GetServiceStatusAsync` |
 
 `Update*Params` send only the properties you set. Setting a nullable text field to `""` clears it
 (sends JSON `null`).
@@ -195,6 +240,26 @@ var session = await lh.CreateCheckoutSessionAsync(new CreateCheckoutParams
 });
 // Redirect the customer to session.Url and fulfil the order on the checkout.session.completed webhook.
 ```
+
+`EmbedOrigins` limits which sites may show the session in an iframe. On the payer's side,
+`TransferAvailable` / `StartCheckoutTransferAsync` show a "Send to address" QR (`Transfer`), and
+`BitcoinAvailable` / `StartCheckoutBitcoinAsync(id, refundAddress)` a Bitcoin deposit address with the
+exact amount and a BIP21 `Uri` (`Bitcoin`; where the API enabled it). `Payment.Method` is `"wallet"`
+or `"transfer"` (then `Payment.QuoteId` is null).
+
+### x402: charge per request
+
+`CreateX402RequirementsAsync` returns the x402 payment requirements for a price you net per request
+(`Accepts`, `AcceptsV1`, `PaymentRequired` for the `PAYMENT-REQUIRED` header). `PayTo` is your own
+fee-splitting deposit address. Check a payer's header with `VerifyX402PaymentAsync` and settle it with
+`SettleX402PaymentAsync` (payload and requirements as `JObject`); `ListX402PaymentsAsync` /
+`GetX402PaymentAsync` list what settled.
+
+### Usage
+
+`GetUsageAsync(new UsageParams { Bucket = "hour" })` returns requests per hour or day with status
+classes, p50 / p95 latency, endpoint groups and error codes for the key's account and mode;
+`ListUsageErrorsAsync` the newest failed requests with their `RequestId`.
 
 ## Webhooks
 
@@ -232,7 +297,7 @@ and several `v1` values are accepted, so secrets can be rotated.
 In **Window > Package Manager > + > Add package from git URL...** enter:
 
 ```
-https://github.com/layerhop/layerhop-csharp.git?path=src/LayerHop#v0.8.0
+https://github.com/layerhop/layerhop-csharp.git?path=src/LayerHop#v0.9.0
 ```
 
 or add it to `Packages/manifest.json`:
@@ -240,7 +305,7 @@ or add it to `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.layerhop.sdk": "https://github.com/layerhop/layerhop-csharp.git?path=src/LayerHop#v0.8.0"
+    "com.layerhop.sdk": "https://github.com/layerhop/layerhop-csharp.git?path=src/LayerHop#v0.9.0"
   }
 }
 ```

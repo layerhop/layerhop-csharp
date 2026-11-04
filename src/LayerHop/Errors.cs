@@ -29,6 +29,8 @@ namespace LayerHop
         public const string QuotaExceeded = "QUOTA_EXCEEDED";
         public const string Unauthorized = "UNAUTHORIZED";
         public const string Forbidden = "FORBIDDEN";
+        /// <summary>HTTP 451: an address of the request is on the OFAC SDN list and screening is enforced (D-069).</summary>
+        public const string AddressSanctioned = "ADDRESS_SANCTIONED";
         public const string NotFound = "NOT_FOUND";
         public const string Conflict = "CONFLICT";
         public const string GaslessPending = "GASLESS_PENDING";

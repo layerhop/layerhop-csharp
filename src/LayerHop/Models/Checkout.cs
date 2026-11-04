@@ -37,6 +37,8 @@ namespace LayerHop
         [JsonProperty("cancelUrl")] public string? CancelUrl { get; set; }
         /// <summary>5-10080; API default 60.</summary>
         [JsonProperty("expiresInMinutes")] public int? ExpiresInMinutes { get; set; }
+        /// <summary>Embedded checkout: the only sites (exact origins, e.g. "https://shop.example") that may show the session in an iframe. Null or empty = any.</summary>
+        [JsonProperty("embedOrigins")] public List<string>? EmbedOrigins { get; set; }
     }
 
     /// <summary>The token a checkout is paid out in.</summary>
@@ -51,7 +53,10 @@ namespace LayerHop
     /// <summary>The current (or final) payment attempt of a session.</summary>
     public class CheckoutPayment
     {
-        [JsonProperty("quoteId")] public string QuoteId { get; set; } = "";
+        /// <summary>"wallet": paid through a quote on the page; "transfer": a scan-to-pay transfer (D-064), no quote. See <see cref="CheckoutPaymentMethods"/>.</summary>
+        [JsonProperty("method")] public string? Method { get; set; }
+        /// <summary>Null for a scan-to-pay transfer.</summary>
+        [JsonProperty("quoteId")] public string? QuoteId { get; set; }
         [JsonProperty("payer")] public string? Payer { get; set; }
         [JsonProperty("srcChainId")] public long? SrcChainId { get; set; }
         [JsonProperty("srcToken")] public string? SrcToken { get; set; }
@@ -91,8 +96,120 @@ namespace LayerHop
         /// <summary>Returned only with the owning account's API key.</summary>
         [JsonProperty("reference")] public string? Reference { get; set; }
         [JsonProperty("metadata")] public Dictionary<string, string>? Metadata { get; set; }
+        /// <summary>Only when paid plans are enabled: false when the merchant's plan is white-label (hide LayerHop branding).</summary>
+        [JsonProperty("branding")] public bool? Branding { get; set; }
+        /// <summary>The payer can be shown a "Send to address" QR (<see cref="LayerHopClient.StartCheckoutTransferAsync"/>).</summary>
+        [JsonProperty("transferAvailable")] public bool? TransferAvailable { get; set; }
+        /// <summary>Scan-to-pay state once the payer asked for a QR, else null.</summary>
+        [JsonProperty("transfer")] public CheckoutTransfer? Transfer { get; set; }
+        /// <summary>Sites allowed to embed this checkout (empty = any).</summary>
+        [JsonProperty("embedOrigins")] public List<string>? EmbedOrigins { get; set; }
+        /// <summary>"Pay with Bitcoin" (D-067; only present where the API enabled it): the session can show a BTC deposit address.</summary>
+        [JsonProperty("bitcoinAvailable")] public bool? BitcoinAvailable { get; set; }
+        /// <summary>The Bitcoin payment once the payer asked for it (<see cref="LayerHopClient.StartCheckoutBitcoinAsync"/>), else null.</summary>
+        [JsonProperty("bitcoin")] public CheckoutBitcoin? Bitcoin { get; set; }
         [JsonProperty("createdAt")] public string CreatedAt { get; set; } = "";
         [JsonProperty("updatedAt")] public string UpdatedAt { get; set; } = "";
+    }
+
+    /// <summary>Values of <see cref="CheckoutPayment.Method"/>.</summary>
+    public static class CheckoutPaymentMethods
+    {
+        public const string Wallet = "wallet";
+        public const string Transfer = "transfer";
+    }
+
+    /// <summary>
+    /// Scan-to-pay ("Send to address", D-064). "evm_transfer": send exactly Amount of Token to Address on ChainId
+    /// (the amount carries a tag in its sub-cent digits). "solana_pay": scan Uri (a Solana Pay transaction request)
+    /// with a Solana wallet. "evm_splitter" (D-065): send exactly Amount to Address, the session's own
+    /// fee-splitting deposit address (amount due + fee).
+    /// </summary>
+    public class CheckoutTransfer
+    {
+        /// <summary>"evm_transfer", "solana_pay" or "evm_splitter".</summary>
+        [JsonProperty("kind")] public string Kind { get; set; } = "";
+        [JsonProperty("chainId")] public long ChainId { get; set; }
+        /// <summary>The settlement token.</summary>
+        [JsonProperty("token")] public string Token { get; set; } = "";
+        [JsonProperty("symbol")] public string Symbol { get; set; } = "";
+        [JsonProperty("decimals")] public int Decimals { get; set; }
+        /// <summary>Where to send: the session's recipient, or its own deposit address (evm_splitter).</summary>
+        [JsonProperty("address")] public string Address { get; set; } = "";
+        /// <summary>What to send now, base units (EVM: the exact tagged amount; after a short payment, the tagged rest).</summary>
+        [JsonProperty("amount")] public string Amount { get; set; } = "";
+        [JsonProperty("amountDue")] public string AmountDue { get; set; } = "";
+        /// <summary>LayerHop's fee on top (inside the Solana Pay transaction, or the part of Amount the deposit contract sends to LayerHop).</summary>
+        [JsonProperty("fee")] public CheckoutTransferFee? Fee { get; set; }
+        /// <summary>QR payload: EIP-681 (EVM) or a Solana Pay transaction request.</summary>
+        [JsonProperty("uri")] public string Uri { get; set; } = "";
+        /// <summary>Solana Pay transfer request (plain transfer), only when enabled.</summary>
+        [JsonProperty("transferUri")] public string? TransferUri { get; set; }
+        /// <summary>Solana Pay reference key.</summary>
+        [JsonProperty("reference")] public string? Reference { get; set; }
+        /// <summary>Confirmed so far, base units.</summary>
+        [JsonProperty("received")] public string Received { get; set; } = "0";
+        /// <summary>Seen on chain but still confirming.</summary>
+        [JsonProperty("seen")] public string Seen { get; set; } = "0";
+        /// <summary>"waiting", "partial", "paid" or "overpaid".</summary>
+        [JsonProperty("state")] public string State { get; set; } = "";
+        [JsonProperty("txs")] public List<CheckoutTransferTx> Txs { get; set; } = new List<CheckoutTransferTx>();
+        [JsonProperty("startedAt")] public string StartedAt { get; set; } = "";
+        /// <summary>evm_splitter only: the sweep that paid the deposit out to the merchant (null until swept).</summary>
+        [JsonProperty("sweepTxHash")] public string? SweepTxHash { get; set; }
+    }
+
+    public class CheckoutTransferFee
+    {
+        [JsonProperty("bps")] public int Bps { get; set; }
+        [JsonProperty("amount")] public string Amount { get; set; } = "";
+    }
+
+    public class CheckoutTransferTx
+    {
+        [JsonProperty("hash")] public string Hash { get; set; } = "";
+        [JsonProperty("amount")] public string Amount { get; set; } = "";
+        [JsonProperty("at")] public string? At { get; set; }
+    }
+
+    /// <summary>
+    /// "Pay with Bitcoin" (D-067): send exactly AmountSats (AmountBtc) to Address, a Relay deposit address bound
+    /// to this payment; the merchant receives AmountOut of the settlement token. Uri is the BIP21 payment request
+    /// for the QR. After ExpiresAt call StartCheckoutBitcoinAsync again for a fresh quote.
+    /// </summary>
+    public class CheckoutBitcoin
+    {
+        [JsonProperty("address")] public string Address { get; set; } = "";
+        /// <summary>Exact amount to send, satoshis.</summary>
+        [JsonProperty("amountSats")] public string AmountSats { get; set; } = "";
+        /// <summary>The same amount in BTC (decimal string).</summary>
+        [JsonProperty("amountBtc")] public string AmountBtc { get; set; } = "";
+        /// <summary>BIP21 payment request for the QR.</summary>
+        [JsonProperty("uri")] public string Uri { get; set; } = "";
+        /// <summary>What the merchant receives, settlement-token base units.</summary>
+        [JsonProperty("amountOut")] public string AmountOut { get; set; } = "";
+        [JsonProperty("expiresAt")] public string ExpiresAt { get; set; } = "";
+        [JsonProperty("expired")] public bool Expired { get; set; }
+        /// <summary>Relay status: waiting, depositing, pending, submitted, success, failure or refund.</summary>
+        [JsonProperty("status")] public string Status { get; set; } = "";
+        /// <summary>Satoshis seen at Address (mempool included).</summary>
+        [JsonProperty("seenSats")] public string SeenSats { get; set; } = "0";
+        /// <summary>Relay request id.</summary>
+        [JsonProperty("requestId")] public string RequestId { get; set; } = "";
+        /// <summary>LayerHop's fee (Relay app fee, bps of the BTC amount).</summary>
+        [JsonProperty("feeBps")] public int FeeBps { get; set; }
+        [JsonProperty("refundAddress")] public string? RefundAddress { get; set; }
+        /// <summary>Every address shown for this session (all stay watched).</summary>
+        [JsonProperty("quotes")] public List<CheckoutBitcoinQuote> Quotes { get; set; } = new List<CheckoutBitcoinQuote>();
+    }
+
+    public class CheckoutBitcoinQuote
+    {
+        [JsonProperty("address")] public string Address { get; set; } = "";
+        [JsonProperty("amountSats")] public string AmountSats { get; set; } = "";
+        [JsonProperty("status")] public string Status { get; set; } = "";
+        [JsonProperty("requestId")] public string RequestId { get; set; } = "";
+        [JsonProperty("createdAt")] public string CreatedAt { get; set; } = "";
     }
 
     /// <summary>Filters for GET /v1/checkout/sessions.</summary>
@@ -139,6 +256,8 @@ namespace LayerHop
         [JsonProperty("best")] public CheckoutQuote Best { get; set; } = new CheckoutQuote();
         [JsonProperty("quotes")] public List<CheckoutQuote> Quotes { get; set; } = new List<CheckoutQuote>();
         [JsonProperty("errors")] public List<ProviderFailure> Errors { get; set; } = new List<ProviderFailure>();
+        /// <summary>Address screening (D-069) of the payer and payout addresses.</summary>
+        [JsonProperty("screening")] public ScreeningAnnotation? Screening { get; set; }
     }
 
     /// <summary>Body of POST /v1/checkout/products.</summary>
