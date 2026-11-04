@@ -222,7 +222,7 @@ namespace LayerHop
         [JsonProperty("errors")] public List<BalanceError> Errors { get; set; } = new List<BalanceError>();
     }
 
-    /// <summary>Values for <see cref="QuoteParams.Purpose"/> (attribution only; never changes fee, price or route).</summary>
+    /// <summary>Values for <see cref="QuoteParamsBase.Purpose"/> (attribution only; never changes fee, price or route).</summary>
     public static class QuotePurposes
     {
         public const string Tip = "tip";
