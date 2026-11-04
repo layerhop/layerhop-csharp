@@ -14,7 +14,7 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
 
     <PackageId>LayerHop</PackageId>
-    <Version>0.8.0</Version>
+    <Version>0.9.0</Version>
     <Authors>LayerHop</Authors>
     <Company>LayerHop</Company>
     <Description>C# client for the LayerHop cross-chain swap and crypto payments API (.NET and Unity). Fetches quotes and builds unsigned transactions; never holds keys or signs.</Description>

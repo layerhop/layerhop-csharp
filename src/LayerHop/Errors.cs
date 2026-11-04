@@ -19,6 +19,7 @@ namespace LayerHop
         public const string CallsReverted = "CALLS_REVERTED";
         public const string LaunchImageInvalid = "LAUNCH_IMAGE_INVALID";
         public const string NoRoute = "NO_ROUTE";
+        public const string RouteExcluded = "ROUTE_EXCLUDED";
         public const string QuoteNotFound = "QUOTE_NOT_FOUND";
         public const string QuoteExpired = "QUOTE_EXPIRED";
         public const string OrderNotFound = "ORDER_NOT_FOUND";
@@ -28,10 +29,14 @@ namespace LayerHop
         public const string QuotaExceeded = "QUOTA_EXCEEDED";
         public const string Unauthorized = "UNAUTHORIZED";
         public const string Forbidden = "FORBIDDEN";
+        /// <summary>HTTP 451: an address of the request is on the OFAC SDN list and screening is enforced (D-069).</summary>
+        public const string AddressSanctioned = "ADDRESS_SANCTIONED";
         public const string NotFound = "NOT_FOUND";
         public const string Conflict = "CONFLICT";
         public const string GaslessPending = "GASLESS_PENDING";
         public const string GaslessFailed = "GASLESS_FAILED";
+        public const string MarketUnavailable = "MARKET_UNAVAILABLE";
+        public const string LimitOrderRejected = "LIMIT_ORDER_REJECTED";
         public const string Internal = "INTERNAL";
     }
 
